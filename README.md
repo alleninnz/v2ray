@@ -245,7 +245,6 @@ openssl x509 -in /opt/v2ray-tls/certs/live/domain.com/fullchain.pem -enddate -no
 ## 📞 联系方式
 
 - **作者**: Allen
-- **邮箱**: allen@example.com
 - **GitHub**: [@alleninnz](https://github.com/alleninnz)
 
 ---
