@@ -9,7 +9,7 @@ set -euo pipefail
 # Configuration
 DOMAIN=""
 CERT_PATH=""
-V2RAY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+V2RAY_DIR="/opt/v2ray-tls"
 LOG_FILE="$V2RAY_DIR/logs/cert-renewal.log"
 
 # Logging function

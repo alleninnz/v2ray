@@ -18,7 +18,7 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # 配置变量
-V2RAY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+V2RAY_DIR="/opt/v2ray-tls"
 V2RAY_PORT="8080"
 NGINX_PORT="10086"
 WS_PATH="/ray"
@@ -518,8 +518,18 @@ setup_directories() {
     log_step "创建项目目录..."
     
     rm -rf "$V2RAY_DIR"
-    mkdir -p "$V2RAY_DIR"/{config,nginx,certs,logs,scripts}
+    mkdir -p "$V2RAY_DIR"/{config,nginx,certs,logs,scripts,assets}
     cd "$V2RAY_DIR"
+    
+    # 复制assets文件到部署目录
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -d "$SCRIPT_DIR/assets" ]; then
+        log_info "复制静态资源文件..."
+        cp -r "$SCRIPT_DIR/assets"/* "$V2RAY_DIR/assets/"
+        log_success "静态资源文件复制完成"
+    else
+        log_warning "未找到assets目录: $SCRIPT_DIR/assets"
+    fi
     
     log_success "项目目录创建完成: $V2RAY_DIR"
 }
@@ -680,7 +690,8 @@ create_v2ray_config() {
     fi
     
     # 使用模板生成配置
-    process_template "$V2RAY_DIR/configs/v2ray/config.json.template" "config/config.json"
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    process_template "$SCRIPT_DIR/configs/v2ray/config.json.template" "config/config.json"
     
     log_success "V2Ray配置生成完成"
     echo "UUID: $NEW_UUID"
@@ -691,7 +702,8 @@ create_nginx_config() {
     log_step "生成Nginx配置..."
     
     # 使用模板生成配置
-    process_template "$V2RAY_DIR/configs/nginx/nginx.conf.template" "nginx/nginx.conf"
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    process_template "$SCRIPT_DIR/configs/nginx/nginx.conf.template" "nginx/nginx.conf"
     
     log_success "Nginx配置生成完成"
 }
@@ -701,7 +713,8 @@ create_docker_compose() {
     log_step "生成Docker Compose配置..."
     
     # 使用模板生成配置
-    process_template "$V2RAY_DIR/configs/docker/docker-compose.yml.template" "docker-compose.yml"
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    process_template "$SCRIPT_DIR/configs/docker/docker-compose.yml.template" "docker-compose.yml"
     
     log_success "Docker Compose配置生成完成"
 }
