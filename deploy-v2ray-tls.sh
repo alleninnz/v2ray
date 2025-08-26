@@ -591,8 +591,8 @@ setup_directories() {
                 if [ -t 0 ] && [ -t 1 ]; then
                     echo
                     log_warning "建议备份现有证书文件以防数据丢失"
-                    read -p "是否备份现有证书? (Y/n): " -r
-                    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                    read -p "是否备份现有证书? (y/N): " -r
+                    if [[ $REPLY =~ ^[Yy]$ ]]; then
                         backup_certs="y"
                     fi
                 else
@@ -673,20 +673,20 @@ setup_directories() {
             
             echo
             log_warning "请选择证书处理方式:"
-            echo "  [Y] 使用备份的证书（推荐，避免重新申请）"
-            echo "  [N] 删除备份并重新申请 Let's Encrypt 证书"
+            echo "  [y] 使用备份的证书（推荐，避免重新申请）"
+            echo "  [N] 删除备份并重新申请 Let's Encrypt 证书（默认）"
             echo
-            read -p "是否使用备份的证书? (Y/n): " -r
+            read -p "是否使用备份的证书? (y/N): " -r
             
-            if [[ $REPLY =~ ^[Nn]$ ]]; then
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                log_info "用户选择使用备份的证书"
+                USE_EXISTING_CERTS="yes"
+            else
                 log_info "用户选择删除备份并重新申请证书"
                 USE_EXISTING_CERTS="no"
                 rm -rf "$CERTS_BACKUP_DIR"
                 log_success "证书备份已删除，将重新申请 Let's Encrypt 证书"
                 CERTS_BACKUP_DIR=""
-            else
-                log_info "用户选择使用备份的证书"
-                USE_EXISTING_CERTS="yes"
             fi
         else
             log_info "非交互模式，自动使用备份证书"

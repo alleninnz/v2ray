@@ -17,7 +17,8 @@ V2Ray TLS 是一个高级代理服务器部署方案，使用 WebSocket over TLS
 
 ### 🔐 **企业级安全**
 - ✅ **TLS 1.2/1.3 加密** - 最新的传输层安全协议
-- ✅ **自动证书管理** - Let's Encrypt 自动申请和续期
+- ✅ **智能证书管理** - Let's Encrypt 自动申请、续期和备份恢复
+- ✅ **证书备份机制** - 重新部署时可选择性恢复有效证书
 - ✅ **HTTP/2 支持** - 现代Web协议支持
 - ✅ **安全HTTP头** - HSTS、CSP等安全策略
 - ✅ **完美前向保密** - PFS加密套件
@@ -219,7 +220,47 @@ cd /opt/v2ray-tls && docker-compose down
 cd /opt/v2ray-tls && docker-compose pull && docker-compose up -d
 ```
 
-### 证书管理
+## 🔐 智能证书管理系统
+
+### 📋 证书管理概述
+TLS版本配备了先进的证书管理系统，支持：
+- **自动申请** - Let's Encrypt 证书自动申请
+- **智能续期** - 自动检测并续期即将过期的证书
+- **备份恢复** - 重新部署时可选择性恢复有效证书
+- **多重验证** - 确保证书有效性和安全性
+
+### 🆕 证书备份与恢复机制
+
+#### 自动备份流程
+重新部署时，脚本会：
+1. **检测现有证书** - 扫描 `/opt/v2ray-tls/certs` 目录
+2. **显示证书信息** - 展示域名、到期时间、文件数量
+3. **用户确认备份** - 交互式选择是否备份
+4. **安全备份** - 备份到时间戳命名的临时目录
+
+#### 智能恢复选择
+```bash
+[STEP] 证书备份用户确认
+[INFO] 发现证书备份文件: /tmp/v2ray-certs-backup-20250826-214836
+[INFO] 备份包含 4 个证书文件
+[INFO] 证书详情:
+  • 域名: your-domain.com, 到期: Sep 25 12:34:56 2025 GMT
+
+[WARNING] 请选择证书处理方式:
+  [y] 使用备份的证书（推荐，避免重新申请）
+  [N] 删除备份并重新申请 Let's Encrypt 证书（默认）
+
+是否使用备份的证书? (y/N):
+```
+
+#### 智能验证机制
+恢复证书后会进行多重验证：
+- ✅ **文件完整性检查** - 验证证书文件格式
+- ✅ **有效期验证** - 检查证书是否仍在有效期内
+- ✅ **域名匹配** - 确认证书域名与配置一致
+- ✅ **自动续期判断** - 有效期<7天时自动重新申请
+
+### 📜 传统证书管理
 ```bash
 # 手动续期证书
 /opt/v2ray-tls/scripts/renew-cert.sh
@@ -242,6 +283,18 @@ tail -f /opt/v2ray-tls/logs/access.log
 # 检查证书状态
 curl -I https://your-domain.com:10086
 ```
+
+### 💡 证书管理最佳实践
+
+#### 重新部署建议
+1. **保留有效证书** - 如果当前证书有效期>30天，建议选择恢复
+2. **定期重新申请** - 有效期<30天时建议重新申请新证书
+3. **避免频繁申请** - Let's Encrypt 有每周重复申请限制（5次/周）
+
+#### 故障处理
+- **备份失败** - 检查磁盘空间，确保有足够的临时存储
+- **恢复失败** - 备份文件会保留，可手动复制到正确位置
+- **证书过期** - 系统会自动跳过过期证书，重新申请新证书
 
 ## 🔍 故障排除
 
@@ -267,13 +320,54 @@ curl -I http://your-domain.com
 python3 -m http.server 80
 ```
 
-#### 3. SSL证书验证失败
+#### 3. 证书备份与恢复问题
+
+**证书备份失败**
+```bash
+# 检查磁盘空间
+df -h /tmp
+
+# 检查证书目录权限
+ls -la /opt/v2ray-tls/certs
+
+# 手动备份证书
+sudo cp -r /opt/v2ray-tls/certs /tmp/manual-backup-$(date +%Y%m%d)
+```
+
+**证书恢复失败**
+```bash
+# 查找备份文件
+ls -la /tmp/v2ray-certs-backup-*
+
+# 手动恢复证书
+sudo cp -r /tmp/v2ray-certs-backup-*/. /opt/v2ray-tls/certs/
+
+# 检查证书文件权限
+sudo chown -R root:root /opt/v2ray-tls/certs
+sudo chmod 600 /opt/v2ray-tls/certs/live/*/privkey.pem
+sudo chmod 644 /opt/v2ray-tls/certs/live/*/fullchain.pem
+```
+
+**证书过期或无效**
+```bash
+# 检查证书有效期
+openssl x509 -in /opt/v2ray-tls/certs/live/your-domain.com/fullchain.pem -enddate -noout
+
+# 验证证书域名
+openssl x509 -in /opt/v2ray-tls/certs/live/your-domain.com/fullchain.pem -subject -noout
+
+# 强制重新申请证书
+sudo bash deploy-v2ray-tls.sh -d your-domain.com -e your-email@example.com
+# 选择 [N] 删除备份并重新申请
+```
+
+#### 4. SSL证书验证失败
 ```bash
 # 使用自签名证书重新部署
 sudo bash deploy-v2ray-tls.sh -d your-domain.com -c self-signed
 ```
 
-#### 4. 服务连接问题
+#### 5. 服务连接问题
 ```bash
 # 检查端口监听
 netstat -tlnp | grep 10086
@@ -286,13 +380,15 @@ sudo ufw status
 sudo firewall-cmd --list-ports
 ```
 
-#### 5. 证书过期
+#### 6. 重复部署问题
 ```bash
-# 检查证书有效期
-openssl x509 -in /opt/v2ray-tls/certs/live/your-domain.com/fullchain.pem -enddate -noout
+# 如果反复重新部署导致证书问题
+# 建议使用备份恢复机制，避免触及 Let's Encrypt 频率限制
 
-# 强制续期
-/opt/v2ray-tls/scripts/renew-cert.sh
+# 查看 Let's Encrypt 申请日志
+sudo tail -f /var/log/letsencrypt/letsencrypt.log
+
+# 等待频率限制重置（通常1小时内最多5次，1周内最多5次重复申请）
 ```
 
 ### 性能优化
