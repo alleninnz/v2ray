@@ -25,6 +25,7 @@ WS_PATH="/ray"
 DOMAIN=""
 EMAIL=""
 CERT_METHOD=""
+DEBUG_MODE=false
 
 # 日志函数
 log_info() {
@@ -48,21 +49,59 @@ log_step() {
 }
 
 log_debug() {
-    echo -e "${CYAN}[DEBUG]${NC} $1"
+    if [ "$DEBUG_MODE" = true ]; then
+        echo -e "${CYAN}[DEBUG]${NC} $1"
+    fi
 }
 
 # 错误处理函数
 cleanup_on_error() {
-    log_error "部署失败，正在清理..."
+    local exit_code=$?
+    log_error "部署失败，正在清理... (错误代码: $exit_code)"
+    
+    # 防止清理过程中的错误导致脚本再次触发陷阱
+    set +e
+    
     if [ -d "$V2RAY_DIR" ]; then
-        cd "$V2RAY_DIR" && docker-compose down 2>/dev/null || true
-        rm -rf "$V2RAY_DIR"
+        log_info "清理部署目录: $V2RAY_DIR"
+        cd "$V2RAY_DIR" 2>/dev/null && {
+            if [ -f "docker-compose.yml" ]; then
+                log_info "停止Docker容器..."
+                docker-compose down 2>/dev/null || log_warning "无法停止Docker容器"
+            fi
+        }
+        
+        # 询问用户是否删除目录
+        if [ -t 0 ] && [ -t 1 ]; then
+            echo
+            read -p "是否删除部署目录 $V2RAY_DIR? (y/N): " -r
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                rm -rf "$V2RAY_DIR" || log_warning "无法删除目录 $V2RAY_DIR"
+                log_info "部署目录已删除"
+            else
+                log_info "保留部署目录: $V2RAY_DIR"
+            fi
+        else
+            log_info "保留部署目录: $V2RAY_DIR"
+            log_info "如需删除，请手动执行: rm -rf $V2RAY_DIR"
+        fi
     fi
-    exit 1
+    
+    log_error "部署失败，请查看上述错误信息并重试"
+    exit $exit_code
+}
+
+# 安全退出函数
+safe_exit() {
+    local exit_code=${1:-0}
+    set +e
+    exit $exit_code
 }
 
 # 设置错误陷阱
 trap cleanup_on_error ERR
+trap 'safe_exit 130' INT  # Ctrl+C
+trap 'safe_exit 143' TERM # 终止信号
 
 # 显示帮助信息
 show_help() {
@@ -74,6 +113,7 @@ show_help() {
     echo "  -d, --domain DOMAIN     域名 (必需)"
     echo "  -e, --email EMAIL       Let's Encrypt 邮箱地址"
     echo "  -c, --cert METHOD       证书获取方法 (letsencrypt|self-signed) [默认: letsencrypt]"
+    echo "      --debug             启用调试模式，显示详细输出"
     echo "  -h, --help              显示此帮助信息"
     echo
     echo "示例:"
@@ -98,6 +138,10 @@ parse_arguments() {
             -c|--cert)
                 CERT_METHOD="$2"
                 shift 2
+                ;;
+            --debug)
+                DEBUG_MODE=true
+                shift
                 ;;
             -h|--help)
                 show_help
@@ -180,22 +224,61 @@ check_dns_resolution() {
         return 0
     fi
     
-    local domain_ip
-    domain_ip=$(dig +short "$DOMAIN" @8.8.8.8 2>/dev/null | tail -1)
+    log_info "服务器公网IP: $server_ip"
     
+    local domain_ip=""
+    
+    # 尝试使用不同的DNS查询工具
+    if command -v dig &> /dev/null; then
+        log_debug "使用 dig 查询域名解析..."
+        domain_ip=$(dig +short "$DOMAIN" @8.8.8.8 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "")
+    fi
+    
+    # 如果dig失败，尝试使用nslookup
+    if [ -z "$domain_ip" ] && command -v nslookup &> /dev/null; then
+        log_debug "dig 查询失败，尝试使用 nslookup..."
+        domain_ip=$(nslookup "$DOMAIN" 8.8.8.8 2>/dev/null | awk '/^Address: / { print $2 }' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "")
+    fi
+    
+    # 如果nslookup也失败，尝试使用host
+    if [ -z "$domain_ip" ] && command -v host &> /dev/null; then
+        log_debug "nslookup 查询失败，尝试使用 host..."
+        domain_ip=$(host "$DOMAIN" 8.8.8.8 2>/dev/null | awk '/has address/ { print $4 }' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "")
+    fi
+    
+    # 如果所有方法都失败，尝试使用getent（系统DNS解析）
+    if [ -z "$domain_ip" ] && command -v getent &> /dev/null; then
+        log_debug "其他查询方法失败，尝试使用系统DNS解析..."
+        domain_ip=$(getent hosts "$DOMAIN" 2>/dev/null | awk '{ print $1 }' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "")
+    fi
+    
+    # 检查DNS解析结果
     if [ -z "$domain_ip" ]; then
         log_warning "无法解析域名 $DOMAIN，请确认DNS配置正确"
+        log_info "建议检查："
+        log_info "1. 域名是否正确配置A记录指向服务器IP"
+        log_info "2. DNS设置是否已生效（可能需要等待最多24小时）"
+        log_info "3. 网络连接是否正常"
         if [ "$CERT_METHOD" = "letsencrypt" ]; then
-            log_warning "Let's Encrypt 验证可能会失败"
+            log_warning "Let's Encrypt 证书验证可能会失败"
+            log_info "如果DNS未正确配置，建议使用自签名证书：-c self-signed"
         fi
     elif [ "$domain_ip" != "$server_ip" ]; then
         log_warning "域名解析IP ($domain_ip) 与服务器IP ($server_ip) 不匹配"
+        log_info "可能的原因："
+        log_info "1. 域名A记录未正确设置"
+        log_info "2. DNS缓存未更新（等待DNS传播）"
+        log_info "3. 使用了CDN或代理服务"
         if [ "$CERT_METHOD" = "letsencrypt" ]; then
-            log_warning "Let's Encrypt 验证可能会失败"
+            log_warning "Let's Encrypt 证书验证可能会失败"
+            log_info "建议先修复DNS解析或使用自签名证书：-c self-signed"
         fi
     else
-        log_success "域名DNS解析正确"
+        log_success "域名DNS解析正确 ($DOMAIN -> $domain_ip)"
     fi
+    
+    # DNS检查不应该阻止脚本继续执行
+    return 0
 }
 
 # 检查系统要求
@@ -218,19 +301,47 @@ check_system_requirements() {
     log_info "操作系统: $OS"
     
     # 检查必需工具
-    local required_tools=("curl" "dig" "openssl")
+    local required_tools=("curl" "openssl")
+    local dns_tools=("dig" "nslookup" "host")
+    
+    # 检查基础工具
     for tool in "${required_tools[@]}"; do
         if ! command -v "$tool" &> /dev/null; then
             log_info "安装缺失工具: $tool"
             if command -v apt &> /dev/null; then
-                apt update && apt install -y "$tool" dnsutils
+                apt update && apt install -y "$tool" || log_warning "无法安装 $tool"
             elif command -v yum &> /dev/null; then
-                yum install -y "$tool" bind-utils
+                yum install -y "$tool" || log_warning "无法安装 $tool"
             elif command -v dnf &> /dev/null; then
-                dnf install -y "$tool" bind-utils
+                dnf install -y "$tool" || log_warning "无法安装 $tool"
+            else
+                log_warning "无法自动安装 $tool，请手动安装"
             fi
         fi
     done
+    
+    # 检查DNS查询工具（至少需要一个）
+    local dns_tool_available=false
+    for tool in "${dns_tools[@]}"; do
+        if command -v "$tool" &> /dev/null; then
+            dns_tool_available=true
+            log_debug "找到DNS查询工具: $tool"
+            break
+        fi
+    done
+    
+    if ! $dns_tool_available; then
+        log_info "安装DNS查询工具..."
+        if command -v apt &> /dev/null; then
+            apt update && apt install -y dnsutils || log_warning "无法安装dnsutils包"
+        elif command -v yum &> /dev/null; then
+            yum install -y bind-utils || log_warning "无法安装bind-utils包"
+        elif command -v dnf &> /dev/null; then
+            dnf install -y bind-utils || log_warning "无法安装bind-utils包"
+        else
+            log_warning "无法自动安装DNS工具，DNS检查可能不准确"
+        fi
+    fi
     
     # 检查系统架构
     ARCH=$(uname -m)
@@ -239,9 +350,20 @@ check_system_requirements() {
     fi
     
     # 检查内存
-    MEMORY_MB=$(free -m | awk 'NR==2{print $2}')
-    if [ "$MEMORY_MB" -lt 1024 ]; then
-        log_warning "系统内存不足1GB，TLS处理可能影响性能"
+    local MEMORY_MB=0
+    if command -v free &> /dev/null; then
+        MEMORY_MB=$(free -m 2>/dev/null | awk 'NR==2{print $2}' 2>/dev/null || echo "0")
+    elif [ -f /proc/meminfo ]; then
+        MEMORY_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "0")
+    fi
+    
+    if [ "$MEMORY_MB" -gt 0 ]; then
+        log_info "系统内存: ${MEMORY_MB}MB"
+        if [ "$MEMORY_MB" -lt 1024 ]; then
+            log_warning "系统内存不足1GB，TLS处理可能影响性能"
+        fi
+    else
+        log_warning "无法检测系统内存大小"
     fi
 }
 
@@ -250,17 +372,55 @@ check_ports() {
     log_step "检查端口占用情况..."
     
     local ports=(80 443 "$NGINX_PORT" "$V2RAY_PORT")
+    local port_check_cmd=""
+    
+    # 选择可用的端口检查工具
+    if command -v netstat &> /dev/null; then
+        port_check_cmd="netstat -tlnp 2>/dev/null"
+    elif command -v ss &> /dev/null; then
+        port_check_cmd="ss -tlnp 2>/dev/null"
+    elif command -v lsof &> /dev/null; then
+        port_check_cmd="lsof -i -n -P 2>/dev/null"
+    else
+        log_warning "无法找到端口检查工具（netstat/ss/lsof），跳过端口检查"
+        log_info "建议手动检查端口占用情况"
+        return 0
+    fi
+    
     for port in "${ports[@]}"; do
-        if netstat -tlnp 2>/dev/null | grep -q ":${port} "; then
+        local port_in_use=false
+        
+        # 使用选定的工具检查端口
+        if echo "$port_check_cmd" | grep -q netstat; then
+            if $port_check_cmd | grep -q ":${port} "; then
+                port_in_use=true
+            fi
+        elif echo "$port_check_cmd" | grep -q "ss"; then
+            if $port_check_cmd | grep -q ":${port} "; then
+                port_in_use=true
+            fi
+        elif echo "$port_check_cmd" | grep -q lsof; then
+            if $port_check_cmd | grep -q ":${port} "; then
+                port_in_use=true
+            fi
+        fi
+        
+        if $port_in_use; then
             if [ "$port" = "80" ] && [ "$CERT_METHOD" = "letsencrypt" ]; then
                 log_error "端口 80 被占用，Let's Encrypt 验证需要此端口"
-                netstat -tlnp | grep ":80 "
+                log_info "请停止占用端口80的服务后重试"
+                $port_check_cmd | grep ":80 " || true
                 exit 1
             elif [ "$port" = "$NGINX_PORT" ] || [ "$port" = "$V2RAY_PORT" ]; then
                 log_error "端口 $port 已被占用"
-                netstat -tlnp | grep ":${port} "
+                log_info "请更换端口或停止占用该端口的服务"
+                $port_check_cmd | grep ":${port} " || true
                 exit 1
+            else
+                log_warning "端口 $port 被占用，但不影响部署"
             fi
+        else
+            log_debug "端口 $port 可用"
         fi
     done
     
@@ -1081,6 +1241,17 @@ main() {
     echo "         V2Ray TLS 一键部署脚本         "
     echo "========================================="
     echo -e "${NC}"
+    
+    if [ "$DEBUG_MODE" = true ]; then
+        log_debug "调试模式已启用"
+        log_debug "域名: $DOMAIN"
+        log_debug "邮箱: $EMAIL"
+        log_debug "证书方法: $CERT_METHOD"
+        log_debug "部署目录: $V2RAY_DIR"
+        log_debug "Nginx端口: $NGINX_PORT"
+        log_debug "V2Ray端口: $V2RAY_PORT"
+        log_debug "WebSocket路径: $WS_PATH"
+    fi
     
     parse_arguments "$@"
     check_root
