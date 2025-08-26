@@ -27,6 +27,41 @@ EMAIL=""
 CERT_METHOD=""
 DEBUG_MODE=false
 
+# 脚本目录（在脚本开始时就计算，避免工作目录变化导致的问题）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 验证脚本依赖文件
+validate_script_files() {
+    local missing_files=()
+    local required_files=(
+        "$SCRIPT_DIR/configs/v2ray/config.json.template"
+        "$SCRIPT_DIR/configs/nginx/nginx.conf.template" 
+        "$SCRIPT_DIR/configs/docker/docker-compose.yml.template"
+        "$SCRIPT_DIR/assets"
+    )
+    
+    for file in "${required_files[@]}"; do
+        if [[ "$file" == *"/assets" ]]; then
+            if [ ! -d "$file" ]; then
+                missing_files+=("$file (目录)")
+            fi
+        else
+            if [ ! -f "$file" ]; then
+                missing_files+=("$file")
+            fi
+        fi
+    done
+    
+    if [ ${#missing_files[@]} -gt 0 ]; then
+        log_error "缺少必需的文件或目录:"
+        for file in "${missing_files[@]}"; do
+            log_error "  - $file"
+        done
+        log_error "请确保从完整的项目目录运行此脚本"
+        exit 1
+    fi
+}
+
 # 日志函数
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -519,18 +554,32 @@ setup_directories() {
     
     rm -rf "$V2RAY_DIR"
     mkdir -p "$V2RAY_DIR"/{config,nginx,certs,logs,scripts,assets}
-    cd "$V2RAY_DIR"
     
-    # 复制assets文件到部署目录
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # 复制assets文件到部署目录（在cd之前执行）
     if [ -d "$SCRIPT_DIR/assets" ]; then
         log_info "复制静态资源文件..."
-        cp -r "$SCRIPT_DIR/assets"/* "$V2RAY_DIR/assets/"
-        log_success "静态资源文件复制完成"
+        log_debug "源目录: $SCRIPT_DIR/assets"
+        log_debug "目标目录: $V2RAY_DIR/assets"
+        
+        if [ "$(ls -A "$SCRIPT_DIR/assets" 2>/dev/null)" ]; then
+            if cp -r "$SCRIPT_DIR/assets/." "$V2RAY_DIR/assets/" 2>/dev/null; then
+                log_success "静态资源文件复制完成"
+                log_debug "复制的文件数量: $(find "$V2RAY_DIR/assets" -type f | wc -l)"
+            else
+                log_error "复制静态资源文件失败"
+                log_error "请检查权限和磁盘空间"
+                exit 1
+            fi
+        else
+            log_warning "assets目录为空: $SCRIPT_DIR/assets"
+        fi
     else
-        log_warning "未找到assets目录: $SCRIPT_DIR/assets"
+        log_error "未找到assets目录: $SCRIPT_DIR/assets"
+        log_error "请确保从完整的项目目录运行此脚本"
+        exit 1
     fi
     
+    cd "$V2RAY_DIR"
     log_success "项目目录创建完成: $V2RAY_DIR"
 }
 
@@ -690,7 +739,6 @@ create_v2ray_config() {
     fi
     
     # 使用模板生成配置
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     process_template "$SCRIPT_DIR/configs/v2ray/config.json.template" "config/config.json"
     
     log_success "V2Ray配置生成完成"
@@ -702,7 +750,6 @@ create_nginx_config() {
     log_step "生成Nginx配置..."
     
     # 使用模板生成配置
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     process_template "$SCRIPT_DIR/configs/nginx/nginx.conf.template" "nginx/nginx.conf"
     
     log_success "Nginx配置生成完成"
@@ -713,7 +760,6 @@ create_docker_compose() {
     log_step "生成Docker Compose配置..."
     
     # 使用模板生成配置
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     process_template "$SCRIPT_DIR/configs/docker/docker-compose.yml.template" "docker-compose.yml"
     
     log_success "Docker Compose配置生成完成"
@@ -978,6 +1024,7 @@ main() {
     fi
     
     parse_arguments "$@"
+    validate_script_files
     check_root
     validate_domain
     validate_email
