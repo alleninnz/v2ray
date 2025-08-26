@@ -1115,21 +1115,62 @@ setup_directories() {
             fi
         fi
         
-        # 询问用户是否继续
+        # 提供用户选择：备份、覆盖或取消
         if [ -t 0 ] && [ -t 1 ]; then
             echo
-            log_warning "将删除现有部署目录并重新创建"
-            read -p "是否继续? (y/N): " -r
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                log_info "部署已取消"
-                exit 0
-            fi
+            log_warning "发现现有部署目录: $V2RAY_DIR"
+            echo "请选择处理方式:"
+            echo "  1) 备份现有目录并重新部署 (推荐)"
+            echo "  2) 直接覆盖现有目录"
+            echo "  3) 取消部署"
+            echo
+            while true; do
+                read -r -p "请选择 (1/2/3): " choice
+                case $choice in
+                    1)
+                        log_info "选择：备份现有目录并重新部署"
+                        local backup_dir="${V2RAY_DIR}.backup.$(date +%Y%m%d_%H%M%S)"
+                        log_info "正在备份现有目录..."
+                        if mv "$V2RAY_DIR" "$backup_dir"; then
+                            log_success "现有目录已备份到: $backup_dir"
+                        else
+                            log_error "备份失败，部署取消"
+                            exit 1
+                        fi
+                        break
+                        ;;
+                    2)
+                        log_info "选择：直接覆盖现有目录"
+                        log_warning "这将永久删除现有配置和证书"
+                        read -r -p "确认覆盖? (y/N): " confirm
+                        if [[ $confirm =~ ^[Yy]$ ]]; then
+                            rm -rf "$V2RAY_DIR"
+                            break
+                        else
+                            log_info "已取消覆盖，请重新选择"
+                            continue
+                        fi
+                        ;;
+                    3)
+                        log_info "用户选择取消部署"
+                        exit 0
+                        ;;
+                    *)
+                        log_error "无效选择，请输入 1、2 或 3"
+                        continue
+                        ;;
+                esac
+            done
         else
-            log_info "非交互模式，将覆盖现有部署"
+            log_info "非交互模式，自动备份现有部署"
+            local backup_dir="${V2RAY_DIR}.backup.$(date +%Y%m%d_%H%M%S)"
+            if mv "$V2RAY_DIR" "$backup_dir"; then
+                log_success "现有目录已自动备份到: $backup_dir"
+            else
+                log_error "自动备份失败，部署终止"
+                exit 1
+            fi
         fi
-        
-        # 删除现有目录
-        rm -rf "$V2RAY_DIR"
     fi
     
     # 创建新的目录结构
