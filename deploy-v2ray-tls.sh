@@ -611,6 +611,33 @@ generate_self_signed_cert() {
 get_letsencrypt_cert() {
     log_step "获取 Let's Encrypt 证书..."
     
+    # 检查证书是否已存在且有效
+    if [ -f "certs/live/$DOMAIN/fullchain.pem" ] && [ -f "certs/live/$DOMAIN/privkey.pem" ]; then
+        log_info "检查现有证书..."
+        
+        # 检查证书有效期
+        local cert_file="certs/live/$DOMAIN/fullchain.pem"
+        local expiry_date=$(openssl x509 -in "$cert_file" -enddate -noout 2>/dev/null | cut -d= -f2)
+        
+        if [ -n "$expiry_date" ]; then
+            local expiry_timestamp=$(date -d "$expiry_date" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$expiry_date" +%s 2>/dev/null)
+            local current_timestamp=$(date +%s)
+            local days_until_expiry=$(( (expiry_timestamp - current_timestamp) / 86400 ))
+            
+            log_info "证书到期时间: $expiry_date"
+            log_info "剩余有效期: $days_until_expiry 天"
+            
+            if [ "$days_until_expiry" -gt 30 ]; then
+                log_success "现有证书仍然有效，跳过证书申请"
+                return 0
+            else
+                log_warning "证书即将过期（$days_until_expiry 天内），需要更新"
+            fi
+        else
+            log_warning "无法读取证书有效期，重新申请证书"
+        fi
+    fi
+    
     # 创建临时Nginx配置用于验证
     mkdir -p certs/www/.well-known/acme-challenge
     
@@ -631,7 +658,7 @@ get_letsencrypt_cert() {
         certbot/certbot \
         certonly --webroot --webroot-path=/var/www/certbot \
         --email "$EMAIL" --agree-tos --no-eff-email \
-        --force-renewal \
+        --keep-until-expiring \
         -d "$DOMAIN"; then
         
         log_success "Let's Encrypt 证书获取成功"

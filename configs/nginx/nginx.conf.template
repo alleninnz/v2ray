@@ -172,22 +172,39 @@ http {
         location / {
             # 搜索引擎爬虫优先处理（SEO优化）
             if ($user_agent_type = "bot") {
-                try_files $uri @bot_page;
+                rewrite ^/(.*)$ /bot-page last;
             }
             
             # 根据时间段选择不同的网站类型
             if ($page_type = "tech") {
-                try_files $uri @tech_blog;
+                rewrite ^/(.*)$ /tech-page last;
             }
             if ($page_type = "company") {
-                try_files $uri @company_site;
+                rewrite ^/(.*)$ /company-page last;
             }
             if ($page_type = "portfolio") {
-                try_files $uri @portfolio_site;
+                rewrite ^/(.*)$ /portfolio-page last;
             }
             
             # 默认回退到技术博客页面
-            try_files $uri @tech_blog;
+            rewrite ^/(.*)$ /tech-page last;
+        }
+        
+        # 具体页面处理
+        location = /tech-page {
+            try_files /dev/null @tech_blog;
+        }
+        
+        location = /company-page {
+            try_files /dev/null @company_site;
+        }
+        
+        location = /portfolio-page {
+            try_files /dev/null @portfolio_site;
+        }
+        
+        location = /bot-page {
+            try_files /dev/null @bot_page;
         }
 
         # 健康检查接口
