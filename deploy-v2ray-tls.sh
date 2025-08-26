@@ -18,7 +18,7 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # 配置变量
-V2RAY_DIR="/opt/v2ray-tls"
+V2RAY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 V2RAY_PORT="8080"
 NGINX_PORT="10086"
 WS_PATH="/ray"
@@ -52,6 +52,27 @@ log_debug() {
     if [ "$DEBUG_MODE" = true ]; then
         echo -e "${CYAN}[DEBUG]${NC} $1"
     fi
+}
+
+# 模板处理函数
+process_template() {
+    local template_file="$1"
+    local output_file="$2"
+    
+    if [ ! -f "$template_file" ]; then
+        log_error "模板文件不存在: $template_file"
+        exit 1
+    fi
+    
+    # Replace template variables with actual values
+    sed -e "s|{{DOMAIN}}|$DOMAIN|g" \
+        -e "s|{{UUID}}|$NEW_UUID|g" \
+        -e "s|{{WS_PATH}}|$WS_PATH|g" \
+        -e "s|{{NGINX_PORT}}|$NGINX_PORT|g" \
+        -e "s|{{V2RAY_DIR}}|$V2RAY_DIR|g" \
+        "$template_file" > "$output_file"
+    
+    log_success "已生成配置文件: $output_file"
 }
 
 # 错误处理函数
@@ -658,66 +679,8 @@ create_v2ray_config() {
         exit 1
     fi
     
-    cat > config/config.json << EOF
-{
-  "log": {
-    "access": "/tmp/v2ray-access.log",
-    "error": "/tmp/v2ray-error.log",
-    "loglevel": "warning"
-  },
-  "inbounds": [
-    {
-      "port": 8080,
-      "listen": "0.0.0.0",
-      "protocol": "vmess",
-      "settings": {
-        "clients": [
-          {
-            "id": "$NEW_UUID",
-            "alterId": 0,
-            "email": "user@$DOMAIN"
-          }
-        ]
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": {
-          "path": "$WS_PATH",
-          "headers": {
-            "Host": "$DOMAIN"
-          }
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "settings": {},
-      "tag": "direct"
-    },
-    {
-      "protocol": "blackhole",
-      "settings": {},
-      "tag": "blocked"
-    }
-  ],
-  "routing": {
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private"],
-        "outboundTag": "blocked"
-      },
-      {
-        "type": "field",
-        "outboundTag": "direct",
-        "network": "udp,tcp"
-      }
-    ]
-  }
-}
-EOF
+    # 使用模板生成配置
+    process_template "$V2RAY_DIR/configs/v2ray/config.json.template" "config/config.json"
     
     log_success "V2Ray配置生成完成"
     echo "UUID: $NEW_UUID"
@@ -727,210 +690,8 @@ EOF
 create_nginx_config() {
     log_step "生成Nginx配置..."
     
-    cat > nginx/nginx.conf << EOF
-events {
-    worker_connections 1024;
-}
-
-http {
-    include       /etc/nginx/mime.types;
-    default_type  application/octet-stream;
-    
-    # 日志格式
-    log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
-                    '\$status \$body_bytes_sent "\$http_referer" '
-                    '"\$http_user_agent" "\$http_x_forwarded_for"';
-    
-    # 基本配置
-    sendfile        on;
-    keepalive_timeout  65;
-    server_tokens   off;
-    
-    # Gzip 压缩
-    gzip on;
-    gzip_vary on;
-    gzip_min_length 1024;
-    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
-    
-    # 上游服务器配置
-    upstream v2ray {
-        server v2ray:8080;
-    }
-
-    # HTTPS 服务器配置（端口 $NGINX_PORT）
-    server {
-        listen $NGINX_PORT ssl;
-        http2 on;
-        server_name $DOMAIN;
-
-        # 访问日志
-        access_log /var/log/nginx/access.log main;
-        error_log /var/log/nginx/error.log warn;
-
-        # SSL 证书配置
-        ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-        ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-
-        # SSL 安全配置
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE:ECDH:AES:HIGH:!NULL:!aNULL:!MD5:!ADH:!RC4:!DH+3DES:!DHE-RSA-AES256-SHA;
-        ssl_prefer_server_ciphers on;
-        ssl_session_cache shared:SSL:10m;
-        ssl_session_timeout 10m;
-        ssl_session_tickets off;
-        
-        # HSTS
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-        
-        # 其他安全头
-        add_header X-Frame-Options DENY always;
-        add_header X-Content-Type-Options nosniff always;
-        add_header X-XSS-Protection "1; mode=block" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-
-        # WebSocket 代理配置
-        location $WS_PATH {
-            proxy_redirect off;
-            proxy_pass http://v2ray;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host \$host;
-            proxy_set_header X-Real-IP \$remote_addr;
-            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto \$scheme;
-            proxy_read_timeout 86400;
-            proxy_send_timeout 86400;
-        }
-
-        # 动态内容生成变量
-        set \$page_type "";
-        set \$user_agent_type "";
-        
-        # 根据时间和请求特征选择页面类型
-        if (\$time_local ~ "0[0-9]:|1[0-2]:") { set \$page_type "tech"; }
-        if (\$time_local ~ "1[3-7]:") { set \$page_type "company"; }
-        if (\$time_local ~ "1[8-9]:|2[0-3]:") { set \$page_type "portfolio"; }
-        
-        # 根据User-Agent调整内容
-        if (\$http_user_agent ~ "Mobile|Android|iPhone") { set \$user_agent_type "mobile"; }
-        if (\$http_user_agent ~ "bot|crawler|spider|Googlebot|Bingbot") { set \$user_agent_type "bot"; }
-        
-        # 静态资源伪装 - CSS样式
-        location /assets/style.css {
-            return 200 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:0;line-height:1.6;color:#333;background:#f8f9fa;}header{background:#fff;box-shadow:0 2px 4px rgba(0,0,0,.1);padding:1rem 0;}nav{display:flex;justify-content:space-between;align-items:center;max-width:1200px;margin:0 auto;padding:0 2rem;}nav h1{margin:0;color:#2c3e50;}nav ul{display:flex;list-style:none;gap:2rem;margin:0;padding:0;}nav a{text-decoration:none;color:#666;font-weight:500;}nav a:hover{color:#3498db;}main{max-width:1200px;margin:0 auto;padding:2rem;}section{margin:3rem 0;}.hero{text-align:center;padding:4rem 2rem;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;border-radius:8px;}.hero h1{font-size:2.5rem;margin-bottom:1rem;}.hero p{font-size:1.2rem;margin-bottom:2rem;}.cta-button,.primary-btn{background:#3498db;color:white;border:none;padding:1rem 2rem;border-radius:4px;cursor:pointer;font-size:1rem;text-decoration:none;display:inline-block;}.cta-button:hover,.primary-btn:hover{background:#2980b9;}.secondary-btn{background:transparent;color:#3498db;border:2px solid #3498db;padding:1rem 2rem;border-radius:4px;cursor:pointer;font-size:1rem;text-decoration:none;display:inline-block;margin-left:1rem;}.secondary-btn:hover{background:#3498db;color:white;}.service-grid,.project-grid,.skills-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:2rem;margin:2rem 0;}.service-card,.project-card{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 4px 6px rgba(0,0,0,.1);}.service-card h3,.project-card h3{color:#2c3e50;margin-bottom:1rem;}.project-card img{width:100%;height:200px;object-fit:cover;border-radius:4px;margin-bottom:1rem;}.tech-stack{display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:1rem;}.tech-stack span{background:#3498db;color:white;padding:0.25rem 0.75rem;border-radius:12px;font-size:0.8rem;}.skill-category{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 4px 6px rgba(0,0,0,.1);}.skill-category h3{color:#2c3e50;margin-bottom:1rem;}.skill-category ul{list-style:none;padding:0;}.skill-category li{padding:0.5rem 0;border-bottom:1px solid #eee;}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:2rem;margin:2rem 0;text-align:center;}.stat h3{font-size:2.5rem;color:#3498db;margin:0;}.stat p{margin:0.5rem 0 0 0;color:#666;}footer{background:#2c3e50;color:#fff;padding:3rem 0;margin-top:4rem;text-align:center;}.footer-content{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:2rem;margin-bottom:2rem;}.footer-section h4{color:#3498db;margin-bottom:1rem;}@media (max-width: 768px){nav{flex-direction:column;gap:1rem;}nav ul{flex-direction:column;text-align:center;}.hero h1{font-size:2rem;}.hero{padding:2rem 1rem;}main{padding:1rem;}.secondary-btn{margin-left:0;margin-top:1rem;}}';
-            add_header Content-Type text/css;
-            add_header Cache-Control "public, max-age=86400";
-        }
-        
-        # JavaScript资源伪装
-        location /js/main.js {
-            return 200 'document.addEventListener("DOMContentLoaded",function(){const navLinks=document.querySelectorAll("nav a");navLinks.forEach(link=>{link.addEventListener("click",function(e){if(this.getAttribute("href").startsWith("#")){e.preventDefault();const targetId=this.getAttribute("href").substring(1);const targetElement=document.getElementById(targetId);if(targetElement){targetElement.scrollIntoView({behavior:"smooth"})}}})});const buttons=document.querySelectorAll(".cta-button, .primary-btn, .secondary-btn");buttons.forEach(button=>{button.addEventListener("click",function(e){if(this.textContent.includes("Download")){e.preventDefault();console.log("Download initiated")}else if(this.textContent.includes("Get Started")||this.textContent.includes("View Portfolio")){e.preventDefault();console.log("Action triggered:",this.textContent)}})});if(typeof gtag!=="undefined"){gtag("config","GA_MEASUREMENT_ID",{page_title:document.title,page_location:window.location.href})}const now=new Date();const timeElements=document.querySelectorAll("time");timeElements.forEach(el=>{if(!el.getAttribute("datetime")&&!el.textContent.includes(":")&&!el.classList.contains("article-date")){el.textContent=now.toLocaleDateString()}});const articleDates=document.querySelectorAll(".article-date");articleDates.forEach(el=>{const daysAgo=parseInt(el.getAttribute("data-days"))||0;const date=new Date(now);date.setDate(date.getDate()-daysAgo);el.textContent=date.toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});el.setAttribute("datetime",date.toISOString().split("T")[0])})});window.addEventListener("scroll",function(){const header=document.querySelector("header");if(window.scrollY>100){header.style.background="rgba(255,255,255,0.95)";header.style.backdropFilter="blur(10px)"}else{header.style.background="#fff";header.style.backdropFilter="none"}});';
-            add_header Content-Type application/javascript;
-            add_header Cache-Control "public, max-age=86400";
-        }
-        
-        # 图片资源404伪装
-        location /images/ {
-            return 404 '<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><p>The requested image was not found on this server.</p></body></html>';
-            add_header Cache-Control "public, max-age=3600";
-        }
-        
-        # API端点伪装
-        location /api/status {
-            return 200 '{"status":"active","uptime":"99.9%","last_check":"\$time_iso8601","version":"1.2.3"}';
-            add_header Content-Type application/json;
-        }
-        
-        location /api/health {
-            return 200 '{"healthy":true,"services":{"database":"up","cache":"up","storage":"up"},"timestamp":"\$time_iso8601"}';
-            add_header Content-Type application/json;
-        }
-        
-        location /favicon.ico {
-            return 204;
-            add_header Cache-Control "public, max-age=86400";
-        }
-        
-        location /robots.txt {
-            return 200 'User-agent: *\nAllow: /\nDisallow: /admin/\nDisallow: /api/private/\nSitemap: https://\$host:\$server_port/sitemap.xml';
-            add_header Content-Type text/plain;
-        }
-
-        # 技术博客页面模板
-        location @tech_blog {
-            return 200 '<!DOCTYPE html><html><head><title>TechInsights - $DOMAIN</title></head><body><h1>TechInsights</h1><p>Latest technology trends and development insights</p><h2>Featured Articles</h2><ul><li>Machine Learning Trends 2024</li><li>Modern Web Development</li><li>Cloud Native Architecture</li></ul></body></html>';
-            add_header Content-Type text/html;
-            add_header Cache-Control "public, max-age=3600";
-        }
-
-        # 公司主页模板  
-        location @company_site {
-            return 200 '<!DOCTYPE html><html><head><title>InnovaTech Solutions - $DOMAIN</title></head><body><h1>InnovaTech Solutions</h1><p>Leading enterprise technology solutions and digital transformation services</p><h2>Our Services</h2><ul><li>Cloud Migration</li><li>Digital Transformation</li><li>AI Integration</li><li>Cybersecurity</li></ul><p>Contact: solutions@$DOMAIN</p></body></html>';
-            add_header Content-Type text/html;
-            add_header Cache-Control "public, max-age=3600";
-        }
-
-        # 个人作品集模板
-        location @portfolio_site {
-            return 200 '<!DOCTYPE html><html><head><title>Alex Chen - Developer | $DOMAIN</title></head><body><h1>Alex Chen</h1><p>Full-Stack Developer & Cloud Architect</p><h2>Featured Projects</h2><ul><li>E-Commerce Platform</li><li>Mobile Fitness App</li><li>Analytics Dashboard</li><li>AI Chat Platform</li></ul><p>Skills: React, Node.js, Python, AWS</p><p>Contact: alex@$DOMAIN</p></body></html>';
-            add_header Content-Type text/html;
-            add_header Cache-Control "public, max-age=3600";
-        }
-
-        # 搜索引擎爬虫专用页面
-        location @bot_page {
-            return 200 '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>$DOMAIN - Professional Technology Services</title><meta name="description" content="Professional technology consulting, software development, and digital solutions. Specializing in cloud architecture, web development, and enterprise solutions."><meta name="keywords" content="technology consulting, software development, web development, cloud solutions, enterprise services"><meta name="robots" content="index, follow"><link rel="canonical" href="https://$DOMAIN:$NGINX_PORT/"><meta property="og:title" content="$DOMAIN - Technology Solutions"><meta property="og:description" content="Professional technology services and consulting for modern businesses"><meta property="og:type" content="website"><meta property="og:url" content="https://$DOMAIN:$NGINX_PORT/"><meta property="og:site_name" content="$DOMAIN"><meta name="twitter:card" content="summary"><meta name="twitter:title" content="$DOMAIN - Technology Solutions"><meta name="twitter:description" content="Professional technology services and consulting"><script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"$DOMAIN","url":"https://$DOMAIN:$NGINX_PORT","description":"Professional technology consulting and software development services","contactPoint":{"@type":"ContactPoint","contactType":"customer service","email":"contact@$DOMAIN"},"sameAs":["https://linkedin.com/company/$DOMAIN","https://github.com/$DOMAIN"]}</script></head><body><header><h1>Welcome to $DOMAIN</h1><nav><ul><li><a href="/services">Services</a></li><li><a href="/about">About</a></li><li><a href="/portfolio">Portfolio</a></li><li><a href="/blog">Blog</a></li><li><a href="/contact">Contact</a></li></ul></nav></header><main><section><h2>🛠️ Our Services</h2><ul><li><strong>Web Development:</strong> Modern, responsive websites and web applications</li><li><strong>Mobile Applications:</strong> Cross-platform mobile solutions for iOS and Android</li><li><strong>Cloud Solutions:</strong> Scalable cloud architecture and migration services</li><li><strong>Digital Consulting:</strong> Strategic technology consulting for digital transformation</li><li><strong>Software Integration:</strong> API development and third-party integrations</li><li><strong>Maintenance & Support:</strong> Ongoing technical support and system maintenance</li></ul></section><section><h2>💡 Why Choose Us</h2><p>With extensive experience in modern technology solutions, we deliver high-quality, scalable results that drive business growth. Our team specializes in:</p><ul><li>✅ Agile development methodologies</li><li>✅ Cloud-native architectures</li><li>✅ Security-first approach</li><li>✅ Performance optimization</li><li>✅ Continuous integration and deployment</li></ul></section><section><h2>🏢 Industry Experience</h2><p>We have successfully delivered projects across various industries including:</p><p><strong>E-commerce, FinTech, HealthTech, Education, Enterprise SaaS, Media & Entertainment</strong></p></section><section><h2>📞 Contact Information</h2><p>Ready to discuss your next project? Get in touch with our team:</p><ul><li>📧 Email: contact@$DOMAIN</li><li>📞 Phone: Available upon request</li><li>🌐 Website: https://$DOMAIN:$NGINX_PORT</li><li>📍 Serving clients globally</li></ul></section></main><footer><p>&copy; 2024 $DOMAIN. All rights reserved.</p><nav><ul><li><a href="/privacy">Privacy Policy</a></li><li><a href="/terms">Terms of Service</a></li><li><a href="/sitemap.xml">Sitemap</a></li></ul></nav></footer></body></html>';
-            add_header Content-Type text/html;
-            add_header Cache-Control "public, max-age=7200";
-        }
-
-        # 主页面路由逻辑 - 动态内容生成
-        location / {
-            # 搜索引擎爬虫优先处理（SEO优化）
-            if (\$user_agent_type = "bot") {
-                try_files \$uri @bot_page;
-            }
-            
-            # 根据时间段选择不同的网站类型
-            if (\$page_type = "tech") {
-                try_files \$uri @tech_blog;
-            }
-            if (\$page_type = "company") {
-                try_files \$uri @company_site;
-            }
-            if (\$page_type = "portfolio") {
-                try_files \$uri @portfolio_site;
-            }
-            
-            # 默认回退到技术博客页面
-            try_files \$uri @tech_blog;
-        }
-
-        # 健康检查接口
-        location /health {
-            return 200 '{"status":"ok","timestamp":"\$time_iso8601","tls":true}';
-            add_header Content-Type application/json;
-        }
-    }
-
-    # HTTP 重定向到 HTTPS
-    server {
-        listen 80;
-        server_name $DOMAIN;
-        
-        # ACME 质询路径
-        location /.well-known/acme-challenge/ {
-            root /var/www/certbot;
-        }
-        
-        # 其他请求重定向到 HTTPS
-        location / {
-            return 301 https://\$server_name:$NGINX_PORT\$request_uri;
-        }
-    }
-}
-EOF
+    # 使用模板生成配置
+    process_template "$V2RAY_DIR/configs/nginx/nginx.conf.template" "nginx/nginx.conf"
     
     log_success "Nginx配置生成完成"
 }
@@ -939,59 +700,8 @@ EOF
 create_docker_compose() {
     log_step "生成Docker Compose配置..."
     
-    cat > docker-compose.yml << EOF
-version: '3.8'
-
-services:
-  v2ray:
-    image: v2fly/v2fly-core:latest
-    container_name: v2ray-tls-server
-    restart: unless-stopped
-    volumes:
-      - ./config:/etc/v2ray:ro
-      - ./logs:/tmp:rw
-    ports:
-      - "127.0.0.1:8080:8080"
-    environment:
-      - TZ=Asia/Shanghai
-    networks:
-      - v2ray-net
-    command: ["run", "-config", "/etc/v2ray/config.json"]
-    healthcheck:
-      test: ["CMD-SHELL", "netstat -ln | grep :8080 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  nginx:
-    image: nginx:alpine
-    container_name: v2ray-tls-nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "$NGINX_PORT:$NGINX_PORT"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./certs:/etc/letsencrypt:ro
-      - ./certs/www:/var/www/certbot:ro
-      - ./logs:/var/log/nginx:rw
-    depends_on:
-      - v2ray
-    networks:
-      - v2ray-net
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider --no-check-certificate https://localhost:$NGINX_PORT/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-networks:
-  v2ray-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.30.0.0/16
-EOF
+    # 使用模板生成配置
+    process_template "$V2RAY_DIR/configs/docker/docker-compose.yml.template" "docker-compose.yml"
     
     log_success "Docker Compose配置生成完成"
 }

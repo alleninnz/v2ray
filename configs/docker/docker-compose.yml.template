@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  v2ray:
+    image: v2fly/v2fly-core:latest
+    container_name: v2ray-tls-server
+    restart: unless-stopped
+    volumes:
+      - ./config:/etc/v2ray:ro
+      - ./logs:/tmp:rw
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      - v2ray-net
+    command: ["run", "-config", "/etc/v2ray/config.json"]
+    healthcheck:
+      test: ["CMD-SHELL", "netstat -ln | grep :8080 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nginx:
+    image: nginx:alpine
+    container_name: v2ray-tls-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "{{NGINX_PORT}}:{{NGINX_PORT}}"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/letsencrypt:ro
+      - ./certs/www:/var/www/certbot:ro
+      - ./logs:/var/log/nginx:rw
+      - ./assets:{{V2RAY_DIR}}/assets:ro
+    depends_on:
+      - v2ray
+    networks:
+      - v2ray-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider --no-check-certificate https://localhost:{{NGINX_PORT}}/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  v2ray-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
