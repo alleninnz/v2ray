@@ -26,6 +26,8 @@ DOMAIN=""
 EMAIL=""
 CERT_METHOD=""
 DEBUG_MODE=false
+CERTS_BACKUP_DIR=""
+USE_EXISTING_CERTS=""
 
 # 脚本目录（在脚本开始时就计算，避免工作目录变化导致的问题）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -564,15 +566,61 @@ setup_directories() {
             }
         fi
         
-        # 备份现有证书
+        # 备份现有证书（用户确认）
         if [ -d "$V2RAY_DIR/certs" ]; then
-            log_info "备份现有证书文件..."
-            local backup_dir="/tmp/v2ray-certs-backup-$(date +%Y%m%d-%H%M%S)"
-            if cp -r "$V2RAY_DIR/certs" "$backup_dir" 2>/dev/null; then
-                log_success "证书已备份到: $backup_dir"
-                CERTS_BACKUP_DIR="$backup_dir"
+            log_warning "发现现有证书文件"
+            
+            # 检查证书内容
+            local cert_count=$(find "$V2RAY_DIR/certs" -name "*.pem" -type f 2>/dev/null | wc -l)
+            if [ "$cert_count" -gt 0 ]; then
+                log_info "找到 $cert_count 个证书文件"
+                
+                # 显示证书信息
+                for cert_file in $(find "$V2RAY_DIR/certs" -name "fullchain.pem" -type f 2>/dev/null); do
+                    if [ -f "$cert_file" ]; then
+                        local domain_name=$(openssl x509 -in "$cert_file" -noout -subject 2>/dev/null | sed -n 's/.*CN=\([^,]*\).*/\1/p')
+                        local expiry_date=$(openssl x509 -in "$cert_file" -enddate -noout 2>/dev/null | cut -d= -f2)
+                        if [ -n "$domain_name" ] && [ -n "$expiry_date" ]; then
+                            log_info "证书域名: $domain_name, 到期时间: $expiry_date"
+                        fi
+                    fi
+                done
+                
+                # 询问用户是否备份证书
+                local backup_certs="n"
+                if [ -t 0 ] && [ -t 1 ]; then
+                    echo
+                    log_warning "建议备份现有证书文件以防数据丢失"
+                    read -p "是否备份现有证书? (Y/n): " -r
+                    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                        backup_certs="y"
+                    fi
+                else
+                    log_info "非交互模式，自动备份证书文件"
+                    backup_certs="y"
+                fi
+                
+                # 执行备份
+                if [ "$backup_certs" = "y" ]; then
+                    log_info "正在备份证书文件..."
+                    local backup_dir="/tmp/v2ray-certs-backup-$(date +%Y%m%d-%H%M%S)"
+                    if cp -r "$V2RAY_DIR/certs" "$backup_dir" 2>/dev/null; then
+                        log_success "证书已备份到: $backup_dir"
+                        log_info "备份包含 $(find "$backup_dir" -name "*.pem" -type f | wc -l) 个证书文件"
+                        CERTS_BACKUP_DIR="$backup_dir"
+                    else
+                        log_error "证书备份失败"
+                        read -p "继续部署可能会丢失证书，是否继续? (y/N): " -r
+                        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                            log_info "部署已取消"
+                            exit 0
+                        fi
+                    fi
+                else
+                    log_warning "跳过证书备份"
+                fi
             else
-                log_warning "证书备份失败"
+                log_info "证书目录为空，无需备份"
             fi
         fi
         
@@ -598,12 +646,63 @@ setup_directories() {
     
     # 恢复证书文件
     if [ -n "$CERTS_BACKUP_DIR" ] && [ -d "$CERTS_BACKUP_DIR" ]; then
-        log_info "恢复证书文件..."
-        if cp -r "$CERTS_BACKUP_DIR/." "$V2RAY_DIR/certs/" 2>/dev/null; then
-            log_success "证书文件已恢复"
-            rm -rf "$CERTS_BACKUP_DIR"
+        # 证书备份用户确认机制
+        if [ -t 0 ] && [ -t 1 ]; then
+            echo
+            log_step "证书备份用户确认"
+            log_info "发现证书备份文件: $CERTS_BACKUP_DIR"
+            
+            # 显示备份证书信息
+            local cert_count=$(find "$CERTS_BACKUP_DIR" -name "*.pem" -type f | wc -l)
+            log_info "备份包含 $cert_count 个证书文件"
+            
+            # 显示证书详情
+            local cert_files=$(find "$CERTS_BACKUP_DIR" -name "fullchain.pem" -type f)
+            if [ -n "$cert_files" ]; then
+                log_info "证书详情:"
+                echo "$cert_files" | while read -r cert_file; do
+                    if [ -f "$cert_file" ]; then
+                        local domain_name=$(openssl x509 -in "$cert_file" -subject -noout 2>/dev/null | sed -n 's/.*CN=\([^,]*\).*/\1/p')
+                        local expiry_date=$(openssl x509 -in "$cert_file" -enddate -noout 2>/dev/null | cut -d= -f2)
+                        if [ -n "$domain_name" ] && [ -n "$expiry_date" ]; then
+                            echo "  • 域名: $domain_name, 到期: $expiry_date"
+                        fi
+                    fi
+                done
+            fi
+            
+            echo
+            log_warning "请选择证书处理方式:"
+            echo "  [Y] 使用备份的证书（推荐，避免重新申请）"
+            echo "  [N] 删除备份并重新申请 Let's Encrypt 证书"
+            echo
+            read -p "是否使用备份的证书? (Y/n): " -r
+            
+            if [[ $REPLY =~ ^[Nn]$ ]]; then
+                log_info "用户选择删除备份并重新申请证书"
+                USE_EXISTING_CERTS="no"
+                rm -rf "$CERTS_BACKUP_DIR"
+                log_success "证书备份已删除，将重新申请 Let's Encrypt 证书"
+                CERTS_BACKUP_DIR=""
+            else
+                log_info "用户选择使用备份的证书"
+                USE_EXISTING_CERTS="yes"
+            fi
         else
-            log_warning "证书恢复失败，备份保留在: $CERTS_BACKUP_DIR"
+            log_info "非交互模式，自动使用备份证书"
+            USE_EXISTING_CERTS="yes"
+        fi
+        
+        # 执行证书恢复
+        if [ "$USE_EXISTING_CERTS" = "yes" ] && [ -n "$CERTS_BACKUP_DIR" ]; then
+            log_info "恢复证书文件..."
+            if cp -r "$CERTS_BACKUP_DIR/." "$V2RAY_DIR/certs/" 2>/dev/null; then
+                log_success "证书文件已恢复"
+                rm -rf "$CERTS_BACKUP_DIR"
+                CERTS_BACKUP_DIR=""
+            else
+                log_warning "证书恢复失败，备份保留在: $CERTS_BACKUP_DIR"
+            fi
         fi
     fi
     
@@ -751,6 +850,34 @@ get_letsencrypt_cert() {
 # 设置SSL证书
 setup_ssl_certificate() {
     log_step "设置SSL证书..."
+    
+    # 检查是否已有恢复的证书
+    if [ "$USE_EXISTING_CERTS" = "yes" ] && [ "$CERT_METHOD" = "letsencrypt" ]; then
+        local cert_fullchain="$V2RAY_DIR/certs/live/$DOMAIN/fullchain.pem"
+        local cert_privkey="$V2RAY_DIR/certs/live/$DOMAIN/privkey.pem"
+        
+        if [ -f "$cert_fullchain" ] && [ -f "$cert_privkey" ]; then
+            log_success "使用已恢复的证书文件"
+            
+            # 验证证书有效性
+            local expiry_date=$(openssl x509 -in "$cert_fullchain" -enddate -noout 2>/dev/null | cut -d= -f2)
+            if [ -n "$expiry_date" ]; then
+                local expiry_timestamp=$(date -d "$expiry_date" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$expiry_date" +%s 2>/dev/null)
+                local current_timestamp=$(date +%s)
+                local days_until_expiry=$(( (expiry_timestamp - current_timestamp) / 86400 ))
+                
+                log_info "证书到期时间: $expiry_date"
+                log_info "剩余有效期: $days_until_expiry 天"
+                
+                if [ "$days_until_expiry" -gt 7 ]; then
+                    log_success "证书有效，跳过重新申请"
+                    return 0
+                else
+                    log_warning "证书即将过期，将重新申请"
+                fi
+            fi
+        fi
+    fi
     
     case "$CERT_METHOD" in
         "letsencrypt")
