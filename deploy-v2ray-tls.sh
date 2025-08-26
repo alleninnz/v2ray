@@ -105,6 +105,12 @@ log_step() {
     echo -e "${PURPLE}${BOLD}[STEP]${NC} $1"
 }
 
+log_debug() {
+    if [ "$DEBUG_MODE" = true ]; then
+        echo -e "${CYAN}[DEBUG]${NC} $1"
+    fi
+}
+
 # 进度显示函数
 show_progress() {
     local current=$1
@@ -262,7 +268,7 @@ cleanup_on_error() {
     find /tmp -name "v2ray-*" -type f -mtime +1 -delete 2>/dev/null || true
     
     log_error "部署失败，请查看上述错误信息并重试"
-    exit $exit_code
+    exit "$exit_code"
 }
 
 # 安全退出函数
@@ -273,7 +279,7 @@ safe_exit() {
     # 清理临时文件
     cleanup_temp_files
     
-    exit $exit_code
+    exit "$exit_code"
 }
 
 # 清理临时文件函数
@@ -376,7 +382,8 @@ verify_file_permissions() {
         local expected_perm="${item#*:}"
         
         if [ -e "$file" ]; then
-            local actual_perm=$(stat -f "%Lp" "$file" 2>/dev/null)
+            local actual_perm
+            actual_perm=$(stat -f "%Lp" "$file" 2>/dev/null)
             if [ "$actual_perm" != "$expected_perm" ]; then
                 log_warning "文件 $file 权限不正确: 实际 $actual_perm, 期望 $expected_perm"
                 issues_found=true
@@ -391,20 +398,48 @@ verify_file_permissions() {
         return 1
     fi
 }
+
+# 扩展的临时文件清理函数
+cleanup_extended_temp_files() {
+    log_debug "执行扩展临时文件清理..."
+    
+    # 额外的临时文件模式
+    local temp_patterns=(
         "docker-*"
         "certbot-*"
     )
     
+    # 安全地清理特定模式的文件，避免通配符攻击
     for pattern in "${temp_patterns[@]}"; do
-        find /tmp -name "$pattern" -type f -mtime +1 -delete 2>/dev/null || true
+        # 只清理我们创建的特定文件
+        case "$pattern" in
+            "v2ray-*")
+                find /tmp -maxdepth 1 -name "v2ray-deploy.*" -type f -mtime +1 -delete 2>/dev/null || true
+                ;;
+            "nginx-*")
+                find /tmp -maxdepth 1 -name "nginx-temp.*" -type f -mtime +1 -delete 2>/dev/null || true
+                ;;
+            "docker-*")
+                find /tmp -maxdepth 1 -name "docker-compose-*" -type f -mtime +1 -delete 2>/dev/null || true
+                ;;
+            "certbot-*")
+                find /tmp -maxdepth 1 -name "certbot-*" -type f -mtime +1 -delete 2>/dev/null || true
+                ;;
+        esac
     done
     
-    # 清理过期的证书备份（超过30天）
+    # 安全清理过期的证书备份（超过30天）
     if [ -d "/var/lib/v2ray-backup" ]; then
-        find /var/lib/v2ray-backup -name "certs-*" -type d -mtime +30 -exec rm -rf {} \; 2>/dev/null || true
+        # 使用更安全的方法清理备份，避免符号链接攻击
+        find /var/lib/v2ray-backup -maxdepth 1 -name "certs-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]" -type d -mtime +30 2>/dev/null | while read -r backup_dir; do
+            # 验证目录名格式确保安全
+            if [[ "$(basename "$backup_dir")" =~ ^certs-[0-9]{8}-[0-9]{6}$ ]]; then
+                rm -rf "$backup_dir" 2>/dev/null || true
+            fi
+        done
     fi
     
-    log_debug "临时文件清理完成"
+    log_debug "扩展临时文件清理完成"
 }
 
 # 设置错误陷阱
@@ -533,9 +568,21 @@ validate_domain() {
         exit 1
     fi
     
-    # 检查是否包含危险字符
-    if [[ "$DOMAIN" =~ [;&\|\`\$\(\)] ]]; then
+    # 检查是否包含危险字符（扩展检查）
+    if echo "$DOMAIN" | grep -q '[;&|`$(){}[\]\\<>"\'"'"'*?~#%=]'; then
         log_error "域名包含危险字符: $DOMAIN"
+        exit 1
+    fi
+    
+    # 检查域名是否包含空格或控制字符
+    if echo "$DOMAIN" | grep -q '[[:space:][:cntrl:]]'; then
+        log_error "域名包含非法空格或控制字符: $DOMAIN"
+        exit 1
+    fi
+    
+    # 防止路径遍历
+    if [[ "$DOMAIN" == *"/.."* ]] || [[ "$DOMAIN" == *"../"* ]] || [[ "$DOMAIN" == ".." ]]; then
+        log_error "域名包含路径遍历字符: $DOMAIN"
         exit 1
     fi
     
@@ -566,14 +613,26 @@ validate_email() {
             exit 1
         fi
         
-        # 检查是否包含危险字符
-        if [[ "$EMAIL" =~ [;&\|\`\$\(\)] ]]; then
+        # 检查是否包含危险字符（扩展检查）
+        if echo "$EMAIL" | grep -q '[;&|`$(){}[\]\\<>"\'"'"'*?~#]'; then
             log_error "邮箱地址包含危险字符: $EMAIL"
             exit 1
         fi
         
+        # 检查邮箱是否包含控制字符
+        if echo "$EMAIL" | grep -q '[[:cntrl:]]'; then
+            log_error "邮箱地址包含非法控制字符: $EMAIL"
+            exit 1
+        fi
+        
+        # 防止路径遍历和注入
+        if [[ "$EMAIL" == *"/.."* ]] || [[ "$EMAIL" == *"../"* ]]; then
+            log_error "邮箱地址包含路径遍历字符: $EMAIL"
+            exit 1
+        fi
+        
         # 严格的邮箱格式验证
-        if ! [[ "$EMAIL" =~ ^[a-zA-Z0-9.!#$%&\'*+/=?^_\`{|}~-]+@[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+        if ! echo "$EMAIL" | grep -E '^[a-zA-Z0-9.!#$%&'\''*+/=?^_`{|}~-]+@[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$' >/dev/null; then
             log_error "邮箱格式无效: $EMAIL"
             exit 1
         fi
@@ -717,7 +776,9 @@ check_system_requirements() {
         if ! command -v "$tool" &> /dev/null; then
             log_info "安装缺失工具: $tool"
             if command -v apt &> /dev/null; then
-                apt update && apt install -y "$tool" || log_warning "无法安装 $tool"
+                if ! (apt update && apt install -y "$tool"); then
+                    log_warning "无法安装 $tool"
+                fi
             elif command -v yum &> /dev/null; then
                 yum install -y "$tool" || log_warning "无法安装 $tool"
             elif command -v dnf &> /dev/null; then
@@ -741,7 +802,9 @@ check_system_requirements() {
     if ! $dns_tool_available; then
         log_info "安装DNS查询工具..."
         if command -v apt &> /dev/null; then
-            apt update && apt install -y dnsutils || log_warning "无法安装dnsutils包"
+            if ! (apt update && apt install -y dnsutils); then
+                log_warning "无法安装dnsutils包"
+            fi
         elif command -v yum &> /dev/null; then
             yum install -y bind-utils || log_warning "无法安装bind-utils包"
         elif command -v dnf &> /dev/null; then
@@ -873,11 +936,77 @@ install_docker_compose() {
         elif command -v dnf &> /dev/null; then
             dnf install -y docker-compose
         else
-            # 手动安装最新版本
-            COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d\" -f4)
-            curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            chmod +x /usr/local/bin/docker-compose
+            # 手动安装最新版本（增加安全验证）
+            log_info "从GitHub下载Docker Compose..."
+            
+            # 获取最新版本，增加错误检查
+            COMPOSE_VERSION=$(curl -s --connect-timeout 10 --max-time 30 https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d\" -f4)
+            
+            if [ -z "$COMPOSE_VERSION" ]; then
+                log_error "无法获取Docker Compose版本信息"
+                exit 1
+            fi
+            
+            log_info "下载 Docker Compose $COMPOSE_VERSION..."
+            
+            # 创建安全的临时目录
+            local temp_dir
+            temp_dir=$(mktemp -d -t docker-compose.XXXXXXXXXX)
+            
+            if [ -z "$temp_dir" ]; then
+                log_error "无法创建临时目录"
+                exit 1
+            fi
+            
+            local compose_url
+            compose_url="https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)"
+            local checksum_url="${compose_url}.sha256"
+            
+            # 下载文件
+            if ! curl -L --connect-timeout 10 --max-time 300 "$compose_url" -o "$temp_dir/docker-compose"; then
+                log_error "下载Docker Compose失败"
+                rm -rf "$temp_dir"
+                exit 1
+            fi
+            
+            # 验证下载的文件
+            if [ ! -s "$temp_dir/docker-compose" ]; then
+                log_error "下载的Docker Compose文件为空"
+                rm -rf "$temp_dir"
+                exit 1
+            fi
+            
+            # 尝试验证文件完整性
+            log_info "尝试验证文件完整性..."
+            if curl -L --connect-timeout 10 --max-time 30 "$checksum_url" -o "$temp_dir/docker-compose.sha256" 2>/dev/null; then
+                cd "$temp_dir" || exit 1
+                if command -v sha256sum &> /dev/null; then
+                    if ! sha256sum -c docker-compose.sha256 >/dev/null 2>&1; then
+                        log_warning "SHA256校验失败，但继续安装（请注意安全风险）"
+                    else
+                        log_success "文件完整性验证通过"
+                    fi
+                elif command -v shasum &> /dev/null; then
+                    local expected_hash=$(cut -d' ' -f1 docker-compose.sha256)
+                    local actual_hash=$(shasum -a 256 docker-compose | cut -d' ' -f1)
+                    if [ "$expected_hash" != "$actual_hash" ]; then
+                        log_warning "SHA256校验失败，但继续安装（请注意安全风险）"
+                    else
+                        log_success "文件完整性验证通过"
+                    fi
+                fi
+                cd - >/dev/null || exit 1
+            else
+                log_warning "无法获取校验和文件，跳过完整性验证"
+            fi
+            
+            # 安装文件
+            chmod +x "$temp_dir/docker-compose"
+            mv "$temp_dir/docker-compose" /usr/local/bin/docker-compose
             ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
+            
+            # 清理临时目录
+            rm -rf "$temp_dir"
         fi
         
         log_success "Docker Compose 安装完成"
@@ -921,20 +1050,24 @@ setup_directories() {
             log_warning "发现现有证书文件"
             
             # 检查证书内容
-            local cert_count=$(find "$V2RAY_DIR/certs" -name "*.pem" -type f 2>/dev/null | wc -l)
+            local cert_count
+            cert_count=$(find "$V2RAY_DIR/certs" -name "*.pem" -type f 2>/dev/null | wc -l)
             if [ "$cert_count" -gt 0 ]; then
                 log_info "找到 $cert_count 个证书文件"
                 
                 # 显示证书信息
-                for cert_file in $(find "$V2RAY_DIR/certs" -name "fullchain.pem" -type f 2>/dev/null); do
+                while IFS= read -r -d '' cert_file; do
+                    [ -z "$cert_file" ] && continue
                     if [ -f "$cert_file" ]; then
-                        local domain_name=$(openssl x509 -in "$cert_file" -noout -subject 2>/dev/null | sed -n 's/.*CN=\([^,]*\).*/\1/p')
-                        local expiry_date=$(openssl x509 -in "$cert_file" -enddate -noout 2>/dev/null | cut -d= -f2)
+                        local domain_name
+                        local expiry_date
+                        domain_name=$(openssl x509 -in "$cert_file" -noout -subject 2>/dev/null | sed -n 's/.*CN=\([^,]*\).*/\1/p')
+                        expiry_date=$(openssl x509 -in "$cert_file" -enddate -noout 2>/dev/null | cut -d= -f2)
                         if [ -n "$domain_name" ] && [ -n "$expiry_date" ]; then
                             log_info "证书域名: $domain_name, 到期时间: $expiry_date"
                         fi
                     fi
-                done
+                done < <(find "$V2RAY_DIR/certs" -name "fullchain.pem" -type f -print0 2>/dev/null)
                 
                 # 询问用户是否备份证书
                 local backup_certs="n"
@@ -954,7 +1087,8 @@ setup_directories() {
                 if [ "$backup_certs" = "y" ]; then
                     log_info "正在备份证书文件..."
                     # 使用更安全的备份目录，设置严格权限
-                    local backup_dir="/var/lib/v2ray-backup/certs-$(date +%Y%m%d-%H%M%S)"
+                    local backup_dir
+                    backup_dir="/var/lib/v2ray-backup/certs-$(date +%Y%m%d-%H%M%S)"
                     mkdir -p "$(dirname "$backup_dir")"
                     chmod 700 "$(dirname "$backup_dir")"  # 只有root可访问
                     
@@ -1010,17 +1144,21 @@ setup_directories() {
             log_info "发现证书备份文件: $CERTS_BACKUP_DIR"
             
             # 显示备份证书信息
-            local cert_count=$(find "$CERTS_BACKUP_DIR" -name "*.pem" -type f | wc -l)
+            local cert_count
+            cert_count=$(find "$CERTS_BACKUP_DIR" -name "*.pem" -type f | wc -l)
             log_info "备份包含 $cert_count 个证书文件"
             
             # 显示证书详情
-            local cert_files=$(find "$CERTS_BACKUP_DIR" -name "fullchain.pem" -type f)
+            local cert_files
+            cert_files=$(find "$CERTS_BACKUP_DIR" -name "fullchain.pem" -type f)
             if [ -n "$cert_files" ]; then
                 log_info "证书详情:"
                 echo "$cert_files" | while read -r cert_file; do
                     if [ -f "$cert_file" ]; then
-                        local domain_name=$(openssl x509 -in "$cert_file" -subject -noout 2>/dev/null | sed -n 's/.*CN=\([^,]*\).*/\1/p')
-                        local expiry_date=$(openssl x509 -in "$cert_file" -enddate -noout 2>/dev/null | cut -d= -f2)
+                        local domain_name
+                        local expiry_date
+                        domain_name=$(openssl x509 -in "$cert_file" -subject -noout 2>/dev/null | sed -n 's/.*CN=\([^,]*\).*/\1/p')
+                        expiry_date=$(openssl x509 -in "$cert_file" -enddate -noout 2>/dev/null | cut -d= -f2)
                         if [ -n "$domain_name" ] && [ -n "$expiry_date" ]; then
                             echo "  • 域名: $domain_name, 到期: $expiry_date"
                         fi
@@ -1137,11 +1275,14 @@ get_letsencrypt_cert() {
         
         # 检查证书有效期
         local cert_file="$cert_fullchain"
-        local expiry_date=$(openssl x509 -in "$cert_file" -enddate -noout 2>/dev/null | cut -d= -f2)
+        local expiry_date
+        expiry_date=$(openssl x509 -in "$cert_file" -enddate -noout 2>/dev/null | cut -d= -f2)
         
         if [ -n "$expiry_date" ]; then
-            local expiry_timestamp=$(date -d "$expiry_date" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$expiry_date" +%s 2>/dev/null)
-            local current_timestamp=$(date +%s)
+            local expiry_timestamp
+            expiry_timestamp=$(date -d "$expiry_date" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$expiry_date" +%s 2>/dev/null)
+            local current_timestamp
+            current_timestamp=$(date +%s)
             local days_until_expiry=$(( (expiry_timestamp - current_timestamp) / 86400 ))
             
             log_info "证书到期时间: $expiry_date"
@@ -1217,7 +1358,8 @@ setup_ssl_certificate() {
             log_success "使用已恢复的证书文件"
             
             # 验证证书有效性
-            local expiry_date=$(openssl x509 -in "$cert_fullchain" -enddate -noout 2>/dev/null | cut -d= -f2)
+            local expiry_date
+            expiry_date=$(openssl x509 -in "$cert_fullchain" -enddate -noout 2>/dev/null | cut -d= -f2)
             if [ -n "$expiry_date" ]; then
                 # 使用多种方法解析日期，提高兼容性
                 local expiry_timestamp=""
@@ -1234,11 +1376,12 @@ setup_ssl_certificate() {
                 
                 # 方法3: 使用 Python (如果可用)
                 if [ -z "$expiry_timestamp" ] && command -v python3 &> /dev/null; then
-                    expiry_timestamp=$(python3 -c "
+                    # 安全地传递参数给Python，防止代码注入
+                    expiry_timestamp=$(printf '%s' "$expiry_date" | python3 -c "
+import sys
 import datetime
-import re
 try:
-    date_str = '$expiry_date'
+    date_str = sys.stdin.read().strip()
     # 解析常见的证书日期格式
     dt = datetime.datetime.strptime(date_str, '%b %d %H:%M:%S %Y %Z')
     print(int(dt.timestamp()))
@@ -1256,7 +1399,8 @@ except:
                         log_warning "证书即将过期或已过期，将重新申请"
                     fi
                 else
-                    local current_timestamp=$(date +%s)
+                    local current_timestamp
+                    current_timestamp=$(date +%s)
                     local days_until_expiry=$(( (expiry_timestamp - current_timestamp) / 86400 ))
                     
                     log_info "证书到期时间: $expiry_date"
@@ -1520,18 +1664,18 @@ VMess 分享链接
 
 $(echo '{
   "v": "2",
-  "ps": "'$DOMAIN'-TLS",
-  "add": "'$DOMAIN'",
-  "port": "'$NGINX_PORT'",
-  "id": "'$NEW_UUID'",
+  "ps": "'"$DOMAIN"'-TLS",
+  "add": "'"$DOMAIN"'",
+  "port": "'"$NGINX_PORT"'",
+  "id": "'"$NEW_UUID"'",
   "aid": "0",
   "scy": "auto",
   "net": "ws",
   "type": "none",
-  "host": "'$DOMAIN'",
+  "host": "'"$DOMAIN"'",
   "path": "'$WS_PATH'",
   "tls": "tls",
-  "sni": "'$DOMAIN'",
+  "sni": "'"$DOMAIN"'",
   "alpn": ""
 }' | base64 -w 0)
 
