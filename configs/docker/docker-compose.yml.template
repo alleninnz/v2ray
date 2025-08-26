@@ -5,6 +5,7 @@ services:
     image: v2fly/v2fly-core:latest
     container_name: v2ray-tls-server
     restart: unless-stopped
+    user: "1001:1001"  # 使用非root用户
     volumes:
       - ./config:/etc/v2ray:ro
       - ./logs:/tmp:rw
@@ -15,16 +16,23 @@ services:
     networks:
       - v2ray-net
     command: ["run", "-config", "/etc/v2ray/config.json"]
+    security_opt:
+      - no-new-privileges:true  # 禁止获得新权限
+    read_only: true  # 只读文件系统
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m  # 临时文件系统
     healthcheck:
-      test: ["CMD-SHELL", "netstat -ln | grep :8080 || exit 1"]
+      test: ["CMD-SHELL", "v2ray test -config=/etc/v2ray/config.json && netstat -ln | grep :8080"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 40s
 
   nginx:
     image: nginx:alpine
     container_name: v2ray-tls-nginx
     restart: unless-stopped
+    user: "101:101"  # nginx用户
     ports:
       - "80:80"
       - "{{NGINX_PORT}}:{{NGINX_PORT}}"
@@ -38,15 +46,31 @@ services:
       - v2ray
     networks:
       - v2ray-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider --no-check-certificate https://localhost:{{NGINX_PORT}}/health || exit 1"]
+      test: ["CMD-SHELL", "nginx -t && curl -f http://localhost:{{NGINX_PORT}}/health > /dev/null 2>&1"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 40s
 
 networks:
   v2ray-net:
     driver: bridge
+    driver_opts:
+      com.docker.network.enable_ipv6: "false"
     ipam:
+      driver: default
       config:
-        - subnet: 172.30.0.0/16
+        - subnet: 172.30.240.0/20  # 更小的子网，减少冲突
+          gateway: 172.30.240.1
+    internal: false
+    attachable: false

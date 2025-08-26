@@ -7,6 +7,9 @@
 
 set -euo pipefail  # 严格错误处理
 
+# 创建PID文件
+echo $$ > "/tmp/v2ray-deploy.pid"
+
 # 颜色和格式化
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -28,6 +31,23 @@ CERT_METHOD=""
 DEBUG_MODE=false
 CERTS_BACKUP_DIR=""
 USE_EXISTING_CERTS=""
+RANDOM_PORTS=false
+
+# 生成随机端口
+generate_random_port() {
+    local min_port=10000
+    local max_port=65000
+    local random_port
+    
+    while true; do
+        random_port=$((RANDOM % (max_port - min_port + 1) + min_port))
+        # 检查端口是否被占用
+        if ! netstat -ln 2>/dev/null | grep -q ":${random_port} "; then
+            echo "$random_port"
+            return 0
+        fi
+    done
+}
 
 # 脚本目录（在脚本开始时就计算，避免工作目录变化导致的问题）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,10 +105,92 @@ log_step() {
     echo -e "${PURPLE}${BOLD}[STEP]${NC} $1"
 }
 
-log_debug() {
-    if [ "$DEBUG_MODE" = true ]; then
-        echo -e "${CYAN}[DEBUG]${NC} $1"
+# 进度显示函数
+show_progress() {
+    local current=$1
+    local total=$2
+    local task_name=$3
+    local percentage=$((current * 100 / total))
+    local bar_length=50
+    local filled_length=$((percentage * bar_length / 100))
+    
+    printf "\r${BLUE}[%3d%%]${NC} " "$percentage"
+    printf "["
+    for ((i=0; i<filled_length; i++)); do printf "█"; done
+    for ((i=filled_length; i<bar_length; i++)); do printf "░"; done
+    printf "] %s" "$task_name"
+    
+    if [ "$current" -eq "$total" ]; then
+        printf "\n"
     fi
+}
+
+# 带进度的任务执行函数
+# 信号处理函数
+handle_signal() {
+    local signal=$1
+    log_warning "接收到信号: $signal"
+    
+    case $signal in
+        "INT"|"TERM")
+            log_info "正在安全清理并退出..."
+            cleanup_on_interrupt
+            safe_exit 130
+            ;;
+        "HUP")
+            log_info "接收到SIGHUP，重新加载配置..."
+            # 这里可以添加配置重载逻辑
+            ;;
+        *)
+            log_warning "未处理的信号: $signal"
+            ;;
+    esac
+}
+
+# 设置信号陷阱
+setup_signal_handlers() {
+    trap 'handle_signal INT' INT
+    trap 'handle_signal TERM' TERM
+    trap 'handle_signal HUP' HUP
+    trap 'cleanup_on_exit' EXIT
+}
+
+# 中断时的清理函数
+cleanup_on_interrupt() {
+    log_warning "检测到用户中断，正在清理资源..."
+    
+    # 记录中断时间
+    echo "Interrupted at: $(date)" >> "/tmp/v2ray-deploy-interrupts.log"
+    
+    # 停止可能运行的容器
+    docker stop v2ray-server nginx-proxy 2>/dev/null || true
+    
+    # 清理可能的锁文件
+    rm -f "/tmp/v2ray-deploy.lock" 2>/dev/null || true
+    
+    # 清理临时文件
+    cleanup_temp_files
+    
+    # 如果证书申请中断，清理Let's Encrypt临时文件
+    if [ -d "/tmp/certbot-*" ]; then
+        rm -rf /tmp/certbot-* 2>/dev/null || true
+    fi
+    
+    log_info "资源清理完成"
+}
+
+# 退出时的清理函数
+cleanup_on_exit() {
+    local exit_code=$?
+    
+    # 只在非正常退出时进行清理
+    if [ $exit_code -ne 0 ]; then
+        log_debug "脚本异常退出 (code: $exit_code)，执行清理..."
+        cleanup_temp_files
+    fi
+    
+    # 移除PID文件
+    rm -f "/tmp/v2ray-deploy.pid" 2>/dev/null || true
 }
 
 # 模板处理函数
@@ -120,14 +222,19 @@ cleanup_on_error() {
     # 防止清理过程中的错误导致脚本再次触发陷阱
     set +e
     
+    # 停止并清理Docker相关资源
     if [ -d "$V2RAY_DIR" ]; then
-        log_info "清理部署目录: $V2RAY_DIR"
+        log_info "清理Docker资源..."
         cd "$V2RAY_DIR" 2>/dev/null && {
             if [ -f "docker-compose.yml" ]; then
                 log_info "停止Docker容器..."
-                docker-compose down 2>/dev/null || log_warning "无法停止Docker容器"
+                docker-compose down --remove-orphans 2>/dev/null || log_warning "无法停止Docker容器"
             fi
         }
+        
+        # 清理可能创建的网络和卷
+        docker network rm v2ray-net 2>/dev/null || true
+        docker volume prune -f 2>/dev/null || true
         
         # 询问用户是否删除目录
         if [ -t 0 ] && [ -t 1 ]; then
@@ -145,6 +252,15 @@ cleanup_on_error() {
         fi
     fi
     
+    # 清理证书备份
+    if [ -n "$CERTS_BACKUP_DIR" ] && [ -d "$CERTS_BACKUP_DIR" ]; then
+        log_info "清理证书备份: $CERTS_BACKUP_DIR"
+        rm -rf "$CERTS_BACKUP_DIR" 2>/dev/null || log_warning "无法清理证书备份"
+    fi
+    
+    # 清理临时文件
+    find /tmp -name "v2ray-*" -type f -mtime +1 -delete 2>/dev/null || true
+    
     log_error "部署失败，请查看上述错误信息并重试"
     exit $exit_code
 }
@@ -153,11 +269,147 @@ cleanup_on_error() {
 safe_exit() {
     local exit_code=${1:-0}
     set +e
+    
+    # 清理临时文件
+    cleanup_temp_files
+    
     exit $exit_code
+}
+
+# 清理临时文件函数
+cleanup_temp_files() {
+    log_debug "清理临时文件..."
+    
+    # 清理可能的临时文件
+    local temp_patterns=(
+        "v2ray-*"
+        "nginx-*"
+        "docker-compose-*"
+        "config-*"
+        "cert-*"
+    )
+    
+    # 清理 /tmp 目录下的临时文件
+    for pattern in "${temp_patterns[@]}"; do
+        find /tmp -name "$pattern" -type f -mtime +0 -delete 2>/dev/null || true
+    done
+    
+    # 清理可能的PID文件
+    rm -f "/tmp/v2ray-deploy.pid" 2>/dev/null || true
+    
+    log_debug "临时文件清理完成"
+}
+
+# 设置配置文件安全权限
+secure_config_files() {
+    log_step "设置配置文件安全权限"
+    
+    local config_dirs=("configs" "certs" "/var/lib/v2ray-backup")
+    local secure_files=(
+        "configs/v2ray/config.json"
+        "configs/docker/docker-compose.yml"
+        "configs/nginx/nginx.conf"
+        "certs/live/${DOMAIN}/privkey.pem"
+        "certs/live/${DOMAIN}/fullchain.pem"
+    )
+    
+    # 创建安全目录
+    for dir in "${config_dirs[@]}"; do
+        if [ ! -d "$dir" ]; then
+            mkdir -p "$dir"
+        fi
+        # 设置目录权限：所有者读写执行，组和其他用户无权限
+        chmod 700 "$dir"
+        chown root:root "$dir"
+    done
+    
+    # 设置敏感文件权限
+    for file in "${secure_files[@]}"; do
+        if [ -f "$file" ]; then
+            # 敏感配置文件：仅所有者可读写
+            chmod 600 "$file"
+            chown root:root "$file"
+            log_info "已设置 $file 安全权限 (600)"
+        fi
+    done
+    
+    # 设置脚本文件权限
+    local script_files=(
+        "deploy-v2ray-basic.sh"
+        "deploy-v2ray-tls.sh"
+        "scripts/renew-cert.sh"
+    )
+    
+    for script in "${script_files[@]}"; do
+        if [ -f "$script" ]; then
+            # 脚本文件：所有者读写执行，组和其他用户只读
+            chmod 754 "$script"
+            chown root:root "$script"
+            log_info "已设置 $script 安全权限 (754)"
+        fi
+    done
+    
+    # 设置模板文件权限
+    find configs -name "*.template" -type f | while read -r template; do
+        chmod 644 "$template"
+        chown root:root "$template"
+    done
+    
+    log_success "配置文件安全权限设置完成"
+}
+
+# 验证文件权限函数
+verify_file_permissions() {
+    log_step "验证文件权限设置"
+    
+    local issues_found=false
+    
+    # 检查敏感文件权限
+    local sensitive_files=(
+        "configs/v2ray/config.json:600"
+        "certs/live/${DOMAIN}/privkey.pem:600"
+        "/var/lib/v2ray-backup:700"
+    )
+    
+    for item in "${sensitive_files[@]}"; do
+        local file="${item%:*}"
+        local expected_perm="${item#*:}"
+        
+        if [ -e "$file" ]; then
+            local actual_perm=$(stat -f "%Lp" "$file" 2>/dev/null)
+            if [ "$actual_perm" != "$expected_perm" ]; then
+                log_warning "文件 $file 权限不正确: 实际 $actual_perm, 期望 $expected_perm"
+                issues_found=true
+            fi
+        fi
+    done
+    
+    if [ "$issues_found" = false ]; then
+        log_success "所有文件权限验证通过"
+    else
+        log_error "发现文件权限问题，请检查安全设置"
+        return 1
+    fi
+}
+        "docker-*"
+        "certbot-*"
+    )
+    
+    for pattern in "${temp_patterns[@]}"; do
+        find /tmp -name "$pattern" -type f -mtime +1 -delete 2>/dev/null || true
+    done
+    
+    # 清理过期的证书备份（超过30天）
+    if [ -d "/var/lib/v2ray-backup" ]; then
+        find /var/lib/v2ray-backup -name "certs-*" -type d -mtime +30 -exec rm -rf {} \; 2>/dev/null || true
+    fi
+    
+    log_debug "临时文件清理完成"
 }
 
 # 设置错误陷阱
 trap cleanup_on_error ERR
+trap cleanup_temp_files EXIT
 trap 'safe_exit 130' INT  # Ctrl+C
 trap 'safe_exit 143' TERM # 终止信号
 
@@ -171,6 +423,8 @@ show_help() {
     echo "  -d, --domain DOMAIN     域名 (必需)"
     echo "  -e, --email EMAIL       Let's Encrypt 邮箱地址"
     echo "  -c, --cert METHOD       证书获取方法 (letsencrypt|self-signed) [默认: letsencrypt]"
+    echo "  -p, --port PORT         HTTPS端口 [默认: 10086]"
+    echo "  -r, --random-ports      使用随机端口提高安全性"
     echo "      --debug             启用调试模式，显示详细输出"
     echo "  -h, --help              显示此帮助信息"
     echo
@@ -197,6 +451,14 @@ parse_arguments() {
                 CERT_METHOD="$2"
                 shift 2
                 ;;
+            -p|--port)
+                NGINX_PORT="$2"
+                shift 2
+                ;;
+            -r|--random-ports)
+                RANDOM_PORTS=true
+                shift
+                ;;
             --debug)
                 DEBUG_MODE=true
                 shift
@@ -216,6 +478,13 @@ parse_arguments() {
     # 设置默认值
     if [ -z "$CERT_METHOD" ]; then
         CERT_METHOD="letsencrypt"
+    fi
+    
+    # 处理随机端口选项
+    if [ "$RANDOM_PORTS" = true ]; then
+        log_info "生成随机端口以提高安全性..."
+        NGINX_PORT=$(generate_random_port)
+        log_info "使用随机HTTPS端口: $NGINX_PORT"
     fi
     
     # 验证必需参数
@@ -245,12 +514,45 @@ check_root() {
 validate_domain() {
     log_step "验证域名格式..."
     
-    if ! [[ "$DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
-        log_error "域名格式无效: $DOMAIN"
+    # 强化域名验证，防止命令注入
+    if [[ -z "$DOMAIN" ]]; then
+        log_error "域名不能为空"
         exit 1
     fi
     
-    log_success "域名格式有效: $DOMAIN"
+    # 检查域名长度
+    if [[ ${#DOMAIN} -gt 253 ]]; then
+        log_error "域名长度超过限制(253字符): $DOMAIN"
+        exit 1
+    fi
+    
+    # 严格的域名格式验证
+    if ! [[ "$DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+        log_error "域名格式无效: $DOMAIN"
+        log_error "域名只能包含字母、数字、点号和连字符"
+        exit 1
+    fi
+    
+    # 检查是否包含危险字符
+    if [[ "$DOMAIN" =~ [;&\|\`\$\(\)] ]]; then
+        log_error "域名包含危险字符: $DOMAIN"
+        exit 1
+    fi
+    
+    # 检查域名段长度和格式
+    IFS='.' read -ra DOMAIN_PARTS <<< "$DOMAIN"
+    for part in "${DOMAIN_PARTS[@]}"; do
+        if [[ ${#part} -eq 0 || ${#part} -gt 63 ]]; then
+            log_error "域名段长度无效: $part"
+            exit 1
+        fi
+        if [[ "$part" =~ ^- || "$part" =~ -$ ]]; then
+            log_error "域名段不能以连字符开头或结尾: $part"
+            exit 1
+        fi
+    done
+    
+    log_success "域名格式验证通过: $DOMAIN"
 }
 
 # 验证邮箱格式
@@ -258,12 +560,45 @@ validate_email() {
     if [ -n "$EMAIL" ]; then
         log_step "验证邮箱格式..."
         
-        if ! [[ "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        # 检查邮箱长度
+        if [[ ${#EMAIL} -gt 254 ]]; then
+            log_error "邮箱地址长度超过限制(254字符): $EMAIL"
+            exit 1
+        fi
+        
+        # 检查是否包含危险字符
+        if [[ "$EMAIL" =~ [;&\|\`\$\(\)] ]]; then
+            log_error "邮箱地址包含危险字符: $EMAIL"
+            exit 1
+        fi
+        
+        # 严格的邮箱格式验证
+        if ! [[ "$EMAIL" =~ ^[a-zA-Z0-9.!#$%&\'*+/=?^_\`{|}~-]+@[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
             log_error "邮箱格式无效: $EMAIL"
             exit 1
         fi
         
-        log_success "邮箱格式有效: $EMAIL"
+        # 检查本地部分长度（@之前）
+        local local_part="${EMAIL%%@*}"
+        if [[ ${#local_part} -gt 64 ]]; then
+            log_error "邮箱本地部分长度超过限制(64字符): $local_part"
+            exit 1
+        fi
+        
+        # 检查域名部分（@之后）
+        local domain_part="${EMAIL##*@}"
+        if [[ ${#domain_part} -gt 253 ]]; then
+            log_error "邮箱域名部分长度超过限制(253字符): $domain_part"
+            exit 1
+        fi
+        
+        # 验证域名部分格式
+        if ! [[ "$domain_part" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+            log_error "邮箱域名格式无效: $domain_part"
+            exit 1
+        fi
+        
+        log_success "邮箱格式验证通过: $EMAIL"
     fi
 }
 
@@ -272,10 +607,25 @@ check_dns_resolution() {
     log_step "检查域名DNS解析..."
     
     local server_ip
-    server_ip=$(curl -s --connect-timeout 10 ifconfig.me 2>/dev/null || \
-                curl -s --connect-timeout 10 icanhazip.com 2>/dev/null || \
-                curl -s --connect-timeout 10 ipecho.net/plain 2>/dev/null || \
-                echo "")
+    local timeout=10
+    local max_retries=3
+    local retry=0
+    
+    # 获取服务器公网IP（带超时和重试）
+    while [ $retry -lt $max_retries ]; do
+        server_ip=$(timeout $timeout curl -s --connect-timeout $timeout ifconfig.me 2>/dev/null || \
+                   timeout $timeout curl -s --connect-timeout $timeout icanhazip.com 2>/dev/null || \
+                   timeout $timeout curl -s --connect-timeout $timeout ipecho.net/plain 2>/dev/null || \
+                   echo "")
+        
+        if [ -n "$server_ip" ]; then
+            break
+        fi
+        
+        retry=$((retry + 1))
+        log_debug "获取服务器IP失败，重试 $retry/$max_retries"
+        sleep 2
+    done
     
     if [ -z "$server_ip" ]; then
         log_warning "无法获取服务器公网IP，跳过DNS检查"
@@ -603,9 +953,16 @@ setup_directories() {
                 # 执行备份
                 if [ "$backup_certs" = "y" ]; then
                     log_info "正在备份证书文件..."
-                    local backup_dir="/tmp/v2ray-certs-backup-$(date +%Y%m%d-%H%M%S)"
+                    # 使用更安全的备份目录，设置严格权限
+                    local backup_dir="/var/lib/v2ray-backup/certs-$(date +%Y%m%d-%H%M%S)"
+                    mkdir -p "$(dirname "$backup_dir")"
+                    chmod 700 "$(dirname "$backup_dir")"  # 只有root可访问
+                    
                     if cp -r "$V2RAY_DIR/certs" "$backup_dir" 2>/dev/null; then
-                        log_success "证书已备份到: $backup_dir"
+                        # 设置严格的证书文件权限
+                        chmod -R 600 "$backup_dir"
+                        chmod 700 "$backup_dir"
+                        log_success "证书已安全备份到: $backup_dir"
                         log_info "备份包含 $(find "$backup_dir" -name "*.pem" -type f | wc -l) 个证书文件"
                         CERTS_BACKUP_DIR="$backup_dir"
                     else
@@ -862,19 +1219,58 @@ setup_ssl_certificate() {
             # 验证证书有效性
             local expiry_date=$(openssl x509 -in "$cert_fullchain" -enddate -noout 2>/dev/null | cut -d= -f2)
             if [ -n "$expiry_date" ]; then
-                local expiry_timestamp=$(date -d "$expiry_date" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$expiry_date" +%s 2>/dev/null)
-                local current_timestamp=$(date +%s)
-                local days_until_expiry=$(( (expiry_timestamp - current_timestamp) / 86400 ))
+                # 使用多种方法解析日期，提高兼容性
+                local expiry_timestamp=""
                 
-                log_info "证书到期时间: $expiry_date"
-                log_info "剩余有效期: $days_until_expiry 天"
-                
-                if [ "$days_until_expiry" -gt 7 ]; then
-                    log_success "证书有效，跳过重新申请"
-                    return 0
-                else
-                    log_warning "证书即将过期，将重新申请"
+                # 方法1: GNU date (Linux)
+                if [ -z "$expiry_timestamp" ]; then
+                    expiry_timestamp=$(date -d "$expiry_date" +%s 2>/dev/null || echo "")
                 fi
+                
+                # 方法2: BSD date (macOS)
+                if [ -z "$expiry_timestamp" ]; then
+                    expiry_timestamp=$(date -j -f "%b %d %H:%M:%S %Y %Z" "$expiry_date" +%s 2>/dev/null || echo "")
+                fi
+                
+                # 方法3: 使用 Python (如果可用)
+                if [ -z "$expiry_timestamp" ] && command -v python3 &> /dev/null; then
+                    expiry_timestamp=$(python3 -c "
+import datetime
+import re
+try:
+    date_str = '$expiry_date'
+    # 解析常见的证书日期格式
+    dt = datetime.datetime.strptime(date_str, '%b %d %H:%M:%S %Y %Z')
+    print(int(dt.timestamp()))
+except:
+    pass
+" 2>/dev/null || echo "")
+                fi
+                
+                # 方法4: 直接用 openssl 验证
+                if [ -z "$expiry_timestamp" ]; then
+                    if openssl x509 -in "$cert_fullchain" -checkend 604800 -noout >/dev/null 2>&1; then
+                        log_success "证书在未来7天内有效，使用现有证书"
+                        return 0
+                    else
+                        log_warning "证书即将过期或已过期，将重新申请"
+                    fi
+                else
+                    local current_timestamp=$(date +%s)
+                    local days_until_expiry=$(( (expiry_timestamp - current_timestamp) / 86400 ))
+                    
+                    log_info "证书到期时间: $expiry_date"
+                    log_info "剩余有效期: $days_until_expiry 天"
+                    
+                    if [ "$days_until_expiry" -gt 7 ]; then
+                        log_success "证书有效，跳过重新申请"
+                        return 0
+                    else
+                        log_warning "证书即将过期，将重新申请"
+                    fi
+                fi
+            else
+                log_warning "无法解析证书有效期，重新申请证书"
             fi
         fi
     fi
@@ -1229,6 +1625,9 @@ show_deployment_result() {
 
 # 主函数
 main() {
+    # 设置信号处理器
+    setup_signal_handlers
+    
     echo -e "${PURPLE}${BOLD}"
     echo "========================================="
     echo "         V2Ray TLS 一键部署脚本         "
@@ -1263,8 +1662,16 @@ main() {
     create_nginx_config
     create_docker_compose
     configure_firewall
+    
+    # 设置配置文件安全权限
+    secure_config_files
+    
     start_services
     test_services
+    
+    # 验证文件权限
+    verify_file_permissions
+    
     save_config_info
     show_deployment_result
     

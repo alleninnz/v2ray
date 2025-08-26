@@ -43,20 +43,25 @@ http {
 
         # SSL 安全配置
         ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE:ECDH:AES:HIGH:!NULL:!aNULL:!MD5:!ADH:!RC4:!DH+3DES:!DHE-RSA-AES256-SHA;
-        ssl_prefer_server_ciphers on;
+        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+        ssl_prefer_server_ciphers off;
         ssl_session_cache shared:SSL:10m;
-        ssl_session_timeout 10m;
+        ssl_session_timeout 1d;
         ssl_session_tickets off;
+        ssl_stapling on;
+        ssl_stapling_verify on;
+        ssl_trusted_certificate /etc/letsencrypt/live/{{DOMAIN}}/chain.pem;
         
         # HSTS
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
         
-        # 其他安全头
+        # 增强安全头
         add_header X-Frame-Options DENY always;
         add_header X-Content-Type-Options nosniff always;
         add_header X-XSS-Protection "1; mode=block" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none';" always;
+        add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
 
         # WebSocket 代理配置
         location {{WS_PATH}} {
@@ -90,12 +95,22 @@ http {
         location /assets/css/ {
             root {{V2RAY_DIR}};
             add_header Cache-Control "public, max-age=86400";
+            add_header X-Content-Type-Options nosniff;
+            add_header X-Frame-Options DENY;
+            location ~* \.(css)$ {
+                expires 1d;
+            }
         }
         
         # JavaScript资源服务
         location /assets/js/ {
             root {{V2RAY_DIR}};
             add_header Cache-Control "public, max-age=86400";
+            add_header X-Content-Type-Options nosniff;
+            add_header X-Frame-Options DENY;
+            location ~* \.(js)$ {
+                expires 1d;
+            }
         }
         
         # 图片资源404伪装

@@ -2,7 +2,8 @@
   "log": {
     "access": "/tmp/v2ray-access.log",
     "error": "/tmp/v2ray-error.log",
-    "loglevel": "warning"
+    "loglevel": "error",
+    "dnsLog": false
   },
   "inbounds": [
     {
