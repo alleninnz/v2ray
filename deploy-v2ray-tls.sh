@@ -552,8 +552,60 @@ generate_uuid() {
 setup_directories() {
     log_step "创建项目目录..."
     
-    rm -rf "$V2RAY_DIR"
+    # 检查目录是否存在
+    if [ -d "$V2RAY_DIR" ]; then
+        log_warning "检测到现有部署目录: $V2RAY_DIR"
+        
+        # 检查是否有现有的部署
+        if [ -f "$V2RAY_DIR/docker-compose.yml" ]; then
+            log_info "发现现有V2Ray部署，正在停止服务..."
+            cd "$V2RAY_DIR" 2>/dev/null && {
+                docker-compose down 2>/dev/null || log_warning "无法停止现有服务"
+            }
+        fi
+        
+        # 备份现有证书
+        if [ -d "$V2RAY_DIR/certs" ]; then
+            log_info "备份现有证书文件..."
+            local backup_dir="/tmp/v2ray-certs-backup-$(date +%Y%m%d-%H%M%S)"
+            if cp -r "$V2RAY_DIR/certs" "$backup_dir" 2>/dev/null; then
+                log_success "证书已备份到: $backup_dir"
+                CERTS_BACKUP_DIR="$backup_dir"
+            else
+                log_warning "证书备份失败"
+            fi
+        fi
+        
+        # 询问用户是否继续
+        if [ -t 0 ] && [ -t 1 ]; then
+            echo
+            log_warning "将删除现有部署目录并重新创建"
+            read -p "是否继续? (y/N): " -r
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log_info "部署已取消"
+                exit 0
+            fi
+        else
+            log_info "非交互模式，将覆盖现有部署"
+        fi
+        
+        # 删除现有目录
+        rm -rf "$V2RAY_DIR"
+    fi
+    
+    # 创建新的目录结构
     mkdir -p "$V2RAY_DIR"/{config,nginx,certs,logs,scripts,assets}
+    
+    # 恢复证书文件
+    if [ -n "$CERTS_BACKUP_DIR" ] && [ -d "$CERTS_BACKUP_DIR" ]; then
+        log_info "恢复证书文件..."
+        if cp -r "$CERTS_BACKUP_DIR/." "$V2RAY_DIR/certs/" 2>/dev/null; then
+            log_success "证书文件已恢复"
+            rm -rf "$CERTS_BACKUP_DIR"
+        else
+            log_warning "证书恢复失败，备份保留在: $CERTS_BACKUP_DIR"
+        fi
+    fi
     
     # 复制assets文件到部署目录（在cd之前执行）
     if [ -d "$SCRIPT_DIR/assets" ]; then
