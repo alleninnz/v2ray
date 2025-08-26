@@ -611,12 +611,24 @@ generate_self_signed_cert() {
 get_letsencrypt_cert() {
     log_step "获取 Let's Encrypt 证书..."
     
+    # 确保在正确的工作目录
+    cd "$V2RAY_DIR" || {
+        log_error "无法切换到部署目录: $V2RAY_DIR"
+        return 1
+    }
+    
     # 检查证书是否已存在且有效
-    if [ -f "certs/live/$DOMAIN/fullchain.pem" ] && [ -f "certs/live/$DOMAIN/privkey.pem" ]; then
-        log_info "检查现有证书..."
+    local cert_fullchain="$V2RAY_DIR/certs/live/$DOMAIN/fullchain.pem"
+    local cert_privkey="$V2RAY_DIR/certs/live/$DOMAIN/privkey.pem"
+    
+    log_debug "检查证书文件: $cert_fullchain"
+    log_debug "当前工作目录: $(pwd)"
+    
+    if [ -f "$cert_fullchain" ] && [ -f "$cert_privkey" ]; then
+        log_info "发现现有证书，检查有效期..."
         
         # 检查证书有效期
-        local cert_file="certs/live/$DOMAIN/fullchain.pem"
+        local cert_file="$cert_fullchain"
         local expiry_date=$(openssl x509 -in "$cert_file" -enddate -noout 2>/dev/null | cut -d= -f2)
         
         if [ -n "$expiry_date" ]; then
@@ -628,7 +640,7 @@ get_letsencrypt_cert() {
             log_info "剩余有效期: $days_until_expiry 天"
             
             if [ "$days_until_expiry" -gt 30 ]; then
-                log_success "现有证书仍然有效，跳过证书申请"
+                log_success "现有证书仍然有效（剩余 $days_until_expiry 天），跳过证书申请"
                 return 0
             else
                 log_warning "证书即将过期（$days_until_expiry 天内），需要更新"
@@ -636,6 +648,10 @@ get_letsencrypt_cert() {
         else
             log_warning "无法读取证书有效期，重新申请证书"
         fi
+    else
+        log_info "未发现现有证书文件，将申请新证书"
+        log_debug "查找路径: $cert_fullchain"
+        log_debug "查找路径: $cert_privkey"
     fi
     
     # 创建临时Nginx配置用于验证
@@ -673,8 +689,9 @@ get_letsencrypt_cert() {
     docker stop temp-nginx 2>/dev/null || true
     
     # 验证证书文件
-    if [ ! -f "certs/live/$DOMAIN/fullchain.pem" ] || [ ! -f "certs/live/$DOMAIN/privkey.pem" ]; then
+    if [ ! -f "$cert_fullchain" ] || [ ! -f "$cert_privkey" ]; then
         log_error "证书文件未找到，切换到自签名证书"
+        log_debug "检查的路径: $cert_fullchain, $cert_privkey"
         generate_self_signed_cert
     fi
 }
