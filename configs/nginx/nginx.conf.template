@@ -63,28 +63,28 @@ http {
             proxy_redirect off;
             proxy_pass http://v2ray;
             proxy_http_version 1.1;
-            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection "upgrade";
-            proxy_set_header Host \$host;
-            proxy_set_header X-Real-IP \$remote_addr;
-            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto \$scheme;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
             proxy_read_timeout 86400;
             proxy_send_timeout 86400;
         }
 
         # 动态内容生成变量
-        set \$page_type "";
-        set \$user_agent_type "";
+        set $page_type "";
+        set $user_agent_type "";
         
         # 根据时间和请求特征选择页面类型
-        if (\$time_local ~ "0[0-9]:|1[0-2]:") { set \$page_type "tech"; }
-        if (\$time_local ~ "1[3-7]:") { set \$page_type "company"; }
-        if (\$time_local ~ "1[8-9]:|2[0-3]:") { set \$page_type "portfolio"; }
+        if ($time_local ~ "0[0-9]:|1[0-2]:") { set $page_type "tech"; }
+        if ($time_local ~ "1[3-7]:") { set $page_type "company"; }
+        if ($time_local ~ "1[8-9]:|2[0-3]:") { set $page_type "portfolio"; }
         
         # 根据User-Agent调整内容
-        if (\$http_user_agent ~ "Mobile|Android|iPhone") { set \$user_agent_type "mobile"; }
-        if (\$http_user_agent ~ "bot|crawler|spider|Googlebot|Bingbot") { set \$user_agent_type "bot"; }
+        if ($http_user_agent ~ "Mobile|Android|iPhone") { set $user_agent_type "mobile"; }
+        if ($http_user_agent ~ "bot|crawler|spider|Googlebot|Bingbot") { set $user_agent_type "bot"; }
         
         # 静态资源服务 - CSS样式
         location /assets/css/ {
@@ -106,12 +106,12 @@ http {
         
         # API端点伪装
         location /api/status {
-            return 200 '{"status":"active","uptime":"99.9%","last_check":"\$time_iso8601","version":"1.2.3"}';
+            return 200 '{"status":"active","uptime":"99.9%","last_check":"$time_iso8601","version":"1.2.3"}';
             add_header Content-Type application/json;
         }
         
         location /api/health {
-            return 200 '{"healthy":true,"services":{"database":"up","cache":"up","storage":"up"},"timestamp":"\$time_iso8601"}';
+            return 200 '{"healthy":true,"services":{"database":"up","cache":"up","storage":"up"},"timestamp":"$time_iso8601"}';
             add_header Content-Type application/json;
         }
         
@@ -171,28 +171,28 @@ http {
         # 主页面路由逻辑 - 动态内容生成
         location / {
             # 搜索引擎爬虫优先处理（SEO优化）
-            if (\$user_agent_type = "bot") {
-                try_files \$uri @bot_page;
+            if ($user_agent_type = "bot") {
+                try_files $uri @bot_page;
             }
             
             # 根据时间段选择不同的网站类型
-            if (\$page_type = "tech") {
-                try_files \$uri @tech_blog;
+            if ($page_type = "tech") {
+                try_files $uri @tech_blog;
             }
-            if (\$page_type = "company") {
-                try_files \$uri @company_site;
+            if ($page_type = "company") {
+                try_files $uri @company_site;
             }
-            if (\$page_type = "portfolio") {
-                try_files \$uri @portfolio_site;
+            if ($page_type = "portfolio") {
+                try_files $uri @portfolio_site;
             }
             
             # 默认回退到技术博客页面
-            try_files \$uri @tech_blog;
+            try_files $uri @tech_blog;
         }
 
         # 健康检查接口
         location /health {
-            return 200 '{"status":"ok","timestamp":"\$time_iso8601","tls":true}';
+            return 200 '{"status":"ok","timestamp":"$time_iso8601","tls":true}';
             add_header Content-Type application/json;
         }
     }
@@ -209,7 +209,7 @@ http {
         
         # 其他请求重定向到 HTTPS
         location / {
-            return 301 https://\$server_name:{{NGINX_PORT}}\$request_uri;
+            return 301 https://$server_name:{{NGINX_PORT}}$request_uri;
         }
     }
 }
