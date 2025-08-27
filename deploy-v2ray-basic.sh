@@ -521,8 +521,8 @@ create_v2ray_config() {
     cat > config/config.json << EOF
 {
   "log": {
-    "access": "/tmp/v2ray-access.log",
-    "error": "/tmp/v2ray-error.log",
+    "access": "/var/log/v2ray/v2ray-access.log",
+    "error": "/var/log/v2ray/v2ray-error.log",
     "loglevel": "warning"
   },
   "inbounds": [
@@ -691,7 +691,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./config:/etc/v2ray:ro
-      - ./logs:/tmp:rw
+      - ./logs:/var/log/v2ray:rw
     ports:
       - "127.0.0.1:8080:8080"
     environment:

@@ -8,7 +8,7 @@ services:
     user: "1001:1001"  # 使用非root用户
     volumes:
       - ./config:/etc/v2ray:ro
-      - ./logs:/tmp:rw
+      - ./logs:/var/log/v2ray:rw
     ports:
       - "127.0.0.1:8080:8080"
     environment:
