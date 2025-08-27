@@ -682,8 +682,6 @@ create_docker_compose() {
     log_step "生成Docker Compose配置..."
     
     cat > docker-compose.yml << 'EOF'
-version: '3.8'
-
 services:
   v2ray:
     image: v2fly/v2fly-core:latest
