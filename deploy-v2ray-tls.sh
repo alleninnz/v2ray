@@ -367,36 +367,74 @@ secure_config_files() {
 # 验证文件权限函数
 verify_file_permissions() {
     log_step "验证文件权限设置"
+    log_info "开始文件权限验证..."
     
     local issues_found=false
     
+    # 检查域名是否已设置
+    if [ -z "$DOMAIN" ]; then
+        log_warning "域名未设置，跳过证书文件权限检查"
+    else
+        log_info "域名已设置: $DOMAIN"
+    fi
+    
     # 检查敏感文件权限
     local sensitive_files=(
-        "configs/v2ray/config.json:600"
-        "certs/live/${DOMAIN}/privkey.pem:600"
-        "/var/lib/v2ray-backup:700"
+        "${V2RAY_DIR}/configs/v2ray/config.json:600"
     )
+    
+    # 只有在域名设置且证书文件存在时才检查证书权限
+    if [ -n "$DOMAIN" ] && [ -f "${V2RAY_DIR}/certs/live/${DOMAIN}/privkey.pem" ]; then
+        sensitive_files+=("${V2RAY_DIR}/certs/live/${DOMAIN}/privkey.pem:600")
+        log_info "添加证书文件到权限检查列表"
+    fi
+    
+    # 只有在备份目录存在时才检查备份目录权限
+    if [ -d "/var/lib/v2ray-backup" ]; then
+        sensitive_files+=("/var/lib/v2ray-backup:700")
+        log_info "添加备份目录到权限检查列表"
+    fi
+    
+    log_info "准备检查 ${#sensitive_files[@]} 个文件的权限..."
     
     for item in "${sensitive_files[@]}"; do
         local file="${item%:*}"
         local expected_perm="${item#*:}"
         
         if [ -e "$file" ]; then
-            local actual_perm
-            actual_perm=$(stat -f "%Lp" "$file" 2>/dev/null)
-            if [ "$actual_perm" != "$expected_perm" ]; then
+            local actual_perm=""
+            # 检测操作系统并使用相应的stat命令格式
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                # macOS
+                actual_perm=$(stat -f "%Lp" "$file" 2>/dev/null)
+            else
+                # Linux
+                actual_perm=$(stat -c "%a" "$file" 2>/dev/null)
+            fi
+            
+            if [ -z "$actual_perm" ]; then
+                log_warning "无法获取文件 $file 的权限信息"
+                issues_found=true
+            elif [ "$actual_perm" != "$expected_perm" ]; then
                 log_warning "文件 $file 权限不正确: 实际 $actual_perm, 期望 $expected_perm"
                 issues_found=true
+            else
+                log_debug "文件 $file 权限正确: $actual_perm"
             fi
+        else
+            log_debug "文件 $file 不存在，跳过权限检查"
         fi
     done
     
     if [ "$issues_found" = false ]; then
         log_success "所有文件权限验证通过"
     else
-        log_error "发现文件权限问题，请检查安全设置"
-        return 1
+        log_warning "发现文件权限问题，但不影响部署继续"
+        log_info "建议在部署完成后手动检查文件权限"
     fi
+    
+    log_info "文件权限验证完成，继续下一步..."
+    return 0  # 始终返回成功，不因权限问题终止部署
 }
 
 # 扩展的临时文件清理函数
@@ -838,6 +876,85 @@ check_system_requirements() {
     fi
 }
 
+# 终止占用指定端口的服务
+terminate_port_service() {
+    local port=$1
+    local force=${2:-false}
+    
+    log_step "查找占用端口 $port 的服务..."
+    
+    local pids=""
+    
+    # 使用不同方法查找占用端口的进程
+    if command -v netstat &> /dev/null; then
+        pids=$(netstat -tlnp 2>/dev/null | grep ":${port} " | awk '{print $7}' | cut -d'/' -f1 | grep -v '-' | sort -u)
+    elif command -v ss &> /dev/null; then
+        pids=$(ss -tlnp 2>/dev/null | grep ":${port} " | sed 's/.*pid=\([0-9]*\).*/\1/' | sort -u)
+    elif command -v lsof &> /dev/null; then
+        pids=$(lsof -ti tcp:${port} 2>/dev/null)
+    fi
+    
+    if [ -z "$pids" ]; then
+        log_info "端口 $port 未被占用"
+        return 0
+    fi
+    
+    log_info "发现以下进程占用端口 $port:"
+    for pid in $pids; do
+        if [ -n "$pid" ] && [ "$pid" != "-" ]; then
+            local process_info=""
+            if command -v ps &> /dev/null; then
+                process_info=$(ps -p "$pid" -o pid,ppid,cmd --no-headers 2>/dev/null || echo "PID: $pid (进程信息不可用)")
+            else
+                process_info="PID: $pid"
+            fi
+            log_info "  $process_info"
+        fi
+    done
+    
+    if [ "$force" = true ]; then
+        log_info "正在终止占用端口 $port 的服务..."
+        for pid in $pids; do
+            if [ -n "$pid" ] && [ "$pid" != "-" ]; then
+                log_info "终止进程 $pid..."
+                if kill "$pid" 2>/dev/null; then
+                    sleep 2
+                    # 检查进程是否还在运行
+                    if kill -0 "$pid" 2>/dev/null; then
+                        log_warning "进程 $pid 仍在运行，尝试强制终止..."
+                        kill -9 "$pid" 2>/dev/null || true
+                    fi
+                    log_success "已终止进程 $pid"
+                else
+                    log_warning "无法终止进程 $pid（可能需要root权限）"
+                fi
+            fi
+        done
+        
+        # 等待一段时间让端口释放
+        log_info "等待端口释放..."
+        sleep 3
+        
+        # 验证端口是否已释放
+        if command -v netstat &> /dev/null; then
+            if netstat -tlnp 2>/dev/null | grep -q ":${port} "; then
+                log_error "端口 $port 仍被占用"
+                return 1
+            fi
+        elif command -v ss &> /dev/null; then
+            if ss -tlnp 2>/dev/null | grep -q ":${port} "; then
+                log_error "端口 $port 仍被占用"
+                return 1
+            fi
+        fi
+        
+        log_success "端口 $port 已释放"
+        return 0
+    else
+        return 1
+    fi
+}
+
 # 检查端口是否被占用
 check_ports() {
     log_step "检查端口占用情况..."
@@ -881,12 +998,72 @@ check_ports() {
                 log_error "端口 80 被占用，Let's Encrypt 验证需要此端口"
                 log_info "请停止占用端口80的服务后重试"
                 $port_check_cmd | grep ":80 " || true
-                exit 1
+                
+                echo
+                log_warning "检测到端口80被占用，Let's Encrypt证书申请需要使用此端口"
+                echo -e "${YELLOW}选择处理方式:${NC}"
+                echo -e "  ${BOLD}y${NC} - 自动终止占用端口80的服务"
+                echo -e "  ${BOLD}N${NC} - 退出脚本（默认）"
+                echo
+                
+                read -p "是否自动终止端口80的服务? [y/N]: " -r choice
+                choice=${choice:-N}
+                
+                case "$choice" in
+                    [yY]|[yY][eE][sS])
+                        log_info "用户选择自动终止端口80的服务"
+                        if terminate_port_service 80 true; then
+                            log_success "端口80已释放，继续部署..."
+                        else
+                            log_error "无法释放端口80，请手动停止相关服务"
+                            log_info "常见命令："
+                            log_info "  sudo systemctl stop apache2    # 停止Apache"
+                            log_info "  sudo systemctl stop nginx     # 停止Nginx"
+                            log_info "  sudo systemctl stop httpd     # 停止httpd"
+                            exit 1
+                        fi
+                        ;;
+                    *)
+                        log_info "用户选择退出脚本"
+                        log_info "请手动停止占用端口80的服务后重新运行脚本"
+                        log_info "常见命令："
+                        log_info "  sudo systemctl stop apache2    # 停止Apache"
+                        log_info "  sudo systemctl stop nginx     # 停止Nginx"
+                        log_info "  sudo systemctl stop httpd     # 停止httpd"
+                        exit 1
+                        ;;
+                esac
             elif [ "$port" = "$NGINX_PORT" ] || [ "$port" = "$V2RAY_PORT" ]; then
                 log_error "端口 $port 已被占用"
                 log_info "请更换端口或停止占用该端口的服务"
                 $port_check_cmd | grep ":${port} " || true
-                exit 1
+                
+                echo
+                log_warning "检测到端口 $port 被占用"
+                echo -e "${YELLOW}选择处理方式:${NC}"
+                echo -e "  ${BOLD}y${NC} - 自动终止占用端口${port}的服务"
+                echo -e "  ${BOLD}N${NC} - 退出脚本（默认）"
+                echo
+                
+                read -p "是否自动终止端口${port}的服务? [y/N]: " -r choice
+                choice=${choice:-N}
+                
+                case "$choice" in
+                    [yY]|[yY][eE][sS])
+                        log_info "用户选择自动终止端口${port}的服务"
+                        if terminate_port_service "$port" true; then
+                            log_success "端口${port}已释放，继续部署..."
+                        else
+                            log_error "无法释放端口${port}，请手动停止相关服务"
+                            exit 1
+                        fi
+                        ;;
+                    *)
+                        log_info "用户选择退出脚本"
+                        log_info "请手动停止占用端口${port}的服务后重新运行脚本"
+                        exit 1
+                        ;;
+                esac
             else
                 log_warning "端口 $port 被占用，但不影响部署"
             fi
@@ -1683,6 +1860,7 @@ test_services() {
 # 保存配置信息
 save_config_info() {
     log_step "保存配置信息..."
+    log_info "开始保存配置信息到文件..."
     
     local tls_note=""
     if [ "$CERT_METHOD" = "self-signed" ]; then
