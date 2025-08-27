@@ -1176,6 +1176,10 @@ setup_directories() {
     # 创建新的目录结构
     mkdir -p "$V2RAY_DIR"/{config,nginx,certs,logs,scripts,assets}
     
+    # 设置目录权限，确保容器可以写入
+    chmod 755 "$V2RAY_DIR"/{config,nginx,certs,logs,scripts,assets}
+    chmod 777 "$V2RAY_DIR/logs"  # nginx需要写入日志文件
+    
     # 恢复证书文件
     if [ -n "$CERTS_BACKUP_DIR" ] && [ -d "$CERTS_BACKUP_DIR" ]; then
         # 证书备份用户确认机制
@@ -1290,6 +1294,11 @@ generate_self_signed_cert() {
     chmod 600 "certs/live/$DOMAIN/privkey.pem"
     chmod 644 "certs/live/$DOMAIN/fullchain.pem"
     
+    # 设置目录权限
+    chmod 755 "certs/live/$DOMAIN"
+    chmod 755 "certs/live"
+    chmod 755 "certs"
+    
     log_success "自签名证书生成完成"
     log_warning "使用自签名证书时，客户端需要允许不安全连接"
 }
@@ -1368,6 +1377,18 @@ get_letsencrypt_cert() {
         -d "$DOMAIN"; then
         
         log_success "Let's Encrypt 证书获取成功"
+        
+        # 设置证书文件权限，确保容器可以读取
+        if [ -d "certs/live/$DOMAIN" ]; then
+            # 设置证书目录权限为755，文件权限为644，让nginx容器可以读取
+            chmod 755 certs/live/$DOMAIN
+            chmod 644 certs/live/$DOMAIN/fullchain.pem 2>/dev/null || true
+            chmod 600 certs/live/$DOMAIN/privkey.pem 2>/dev/null || true
+            # 设置父目录权限
+            chmod 755 certs/live 2>/dev/null || true
+            chmod 755 certs 2>/dev/null || true
+            log_info "证书文件权限已设置"
+        fi
     else
         log_error "Let's Encrypt 证书获取失败，切换到自签名证书"
         docker stop temp-nginx 2>/dev/null || true

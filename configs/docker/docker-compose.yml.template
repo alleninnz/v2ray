@@ -32,7 +32,7 @@ services:
     image: nginx:alpine
     container_name: v2ray-tls-nginx
     restart: unless-stopped
-    user: "101:101"  # nginx用户
+    # 不指定user，让nginx以root运行以读取证书，但限制capabilities
     ports:
       - "80:80"
       - "{{NGINX_PORT}}:{{NGINX_PORT}}"
@@ -42,19 +42,17 @@ services:
       - ./certs/www:/var/www/certbot:ro
       - ./logs:/var/log/nginx:rw
       - ./assets:{{V2RAY_DIR}}/assets:ro
+      - /tmp/nginx:/tmp:rw  # 可写临时目录
     depends_on:
       - v2ray
     networks:
       - v2ray-net
     security_opt:
       - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - SETGID
-      - SETUID
-      - NET_BIND_SERVICE
+    # 移除read_only限制，nginx需要写入临时文件
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=100m
+      - /var/run:rw,noexec,nosuid,size=100m
     healthcheck:
       test: ["CMD-SHELL", "nginx -t && curl -f http://localhost:{{NGINX_PORT}}/health > /dev/null 2>&1"]
       interval: 30s
