@@ -1,31 +1,18 @@
-# 🚀 V2Ray 一键部署脚本集合
+# 🚀 科学上网一键部署脚本集合
 
-**现代化、安全、高效的 V2Ray 代理服务器自动化部署解决方案**
+**现代化、安全、高效的代理服务器自动化部署解决方案**
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-Bash-green.svg)](https://www.gnu.org/software/bash/)
 [![Docker](https://img.shields.io/badge/Containerization-Docker-blue.svg)](https://www.docker.com/)
 [![V2Ray](https://img.shields.io/badge/Core-V2Ray-orange.svg)](https://www.v2fly.org/)
+[![Trojan-Go](https://img.shields.io/badge/Core-Trojan--Go-red.svg)](https://p4gefau1t.github.io/trojan-go/)
 
 ## 📖 项目简介
 
-本项目提供两个高质量的 V2Ray 一键部署脚本，适用于不同的使用场景和安全需求。所有脚本都经过精心优化，具备完善的错误处理、系统检查、证书管理和企业级安全配置。
+本项目提供多种协议的高质量一键部署脚本，包括 V2Ray 和 Trojan-Go，专为生产环境和高安全需求场景设计。脚本经过精心优化，具备完善的错误处理、系统检查、证书管理和企业级安全配置。
 
-## 🎯 脚本概览
-
-### 🔷 V2Ray Basic - 基础版本
-**适用场景**: 快速测试、学习环境、内网使用
-
-- ✅ **快速部署** - 3分钟内完成全自动安装
-- ✅ **WebSocket 传输** - 使用 ws 协议，稳定可靠
-- ✅ **Docker 容器化** - 隔离环境，易于管理
-- ✅ **自动配置** - 包含 Nginx 反向代理
-- ✅ **详细文档** - [查看 Basic 版本文档](README-BASIC.md)
-
-```bash
-# 一键部署
-sudo bash deploy-v2ray-basic.sh
-```
+## 🎯 支持的协议
 
 ### 🔶 V2Ray TLS - 企业级版本 ⭐ **推荐**
 **适用场景**: 生产环境、高安全需求、完美流量伪装
@@ -33,6 +20,14 @@ sudo bash deploy-v2ray-basic.sh
 - 🎭 **高级流量伪装** - 动态内容生成，极难检测
 - 🔒 **企业级安全** - TLS 1.2/1.3 + 22项安全增强
 - 🌐 **域名支持** - 使用真实域名增加可信度
+
+### 🔴 Trojan-Go - 新增！🆕
+**适用场景**: 多协议需求、高性能、简单配置
+**专为服务器 95.169.25.130 优化**
+
+- 🚀 **多协议支持** - Trojan + Shadowsocks + WebSocket
+- ⚡ **高性能** - 基于 teddysun/trojan-go 官方镜像
+- 🔧 **简单配置** - 一键部署，自动优化
 - 📜 **智能证书管理** - Let's Encrypt 自动申请、续期和备份恢复
 - 🎨 **三套网站模板** - 技术博客、企业网站、个人作品集
 - �️ **证书备份机制** - 智能备份与恢复，避免重复申请
@@ -47,18 +42,25 @@ sudo bash deploy-v2ray-tls.sh -d your-domain.com -e your-email@example.com
 sudo bash deploy-v2ray-tls.sh -d your-domain.com -c self-signed
 ```
 
-## 🌟 核心特性对比
+**Trojan-Go 快速部署**：
+```bash
+# 一行命令安装（推荐）
+curl -fsSL https://raw.githubusercontent.com/alleninnz/v2ray/main/install-trojan-server.sh | sudo bash
 
-| 特性 | Basic 版本 | TLS 版本 |
-|------|------------|----------|
-| **部署复杂度** | ⭐ 简单 | ⭐⭐ 中等 |
-| **安全等级** | ⭐⭐⭐ 中等 | ⭐⭐⭐⭐⭐ 企业级 |
-| **流量伪装** | ⭐⭐ 基础 | ⭐⭐⭐⭐⭐ 高级 |
-| **抗检测性** | ⭐⭐⭐ 良好 | ⭐⭐⭐⭐⭐ 极强 |
-| **域名需求** | ❌ 不需要 | ✅ 必需 |
-| **证书管理** | ❌ 无 | ✅ 智能管理 + 备份恢复 |
-| **安全增强** | ⭐⭐ 基础 | ⭐⭐⭐⭐⭐ 22项安全修复 |
-| **适用环境** | 测试、学习 | 生产、企业 |
+# 然后运行交互式部署
+sudo bash quick-deploy-trojan.sh
+
+# 或者直接命令行部署
+sudo bash deploy-trojan-go-tls.sh -d your-domain.com -e your-email@example.com
+```
+
+📚 **详细文档**：
+- V2Ray TLS 版本：[README-TLS.md](README-TLS.md)
+- Trojan-Go 版本：[README-TROJAN.md](README-TROJAN.md)
+
+## 🌟 核心特性
+
+TLS版本具备企业级安全特性：
 
 ## 🎭 TLS版本的流量伪装技术
 
@@ -120,35 +122,25 @@ https://your-domain.com/
 
 ## 🚀 快速开始
 
-### 1. 选择适合的版本
+### 1. 准备工作
 
-**新手用户 / 测试环境** → 选择 **Basic版本**
-**生产环境 / 高安全需求** → 选择 **TLS版本**
-
-### 2. 准备工作
-
-#### Basic版本
-- 一台具有公网IP的Linux服务器
-- Root权限
-
-#### TLS版本  
 - 一台具有公网IP的Linux服务器
 - 一个可控制DNS的域名
 - Root权限
 - 邮箱地址（用于Let's Encrypt）
 
-### 3. 下载和运行
+### 2. 下载和运行
 
 ```bash
 # 克隆项目
 git clone https://github.com/alleninnz/v2ray.git
 cd v2ray
 
-# 运行Basic版本
-sudo bash deploy-v2ray-basic.sh
-
-# 运行TLS版本
+# 使用 Let's Encrypt 证书部署
 sudo bash deploy-v2ray-tls.sh -d your-domain.com -e your-email@example.com
+
+# 使用自签名证书部署（测试）
+sudo bash deploy-v2ray-tls.sh -d your-domain.com -c self-signed
 ```
 
 ## 📱 客户端配置
@@ -176,12 +168,12 @@ sudo bash deploy-v2ray-tls.sh -d your-domain.com -e your-email@example.com
 - **其他支持Docker的Linux发行版**
 
 ### 硬件要求
-- **Basic版本**: 512MB+ 内存, 1GB+ 磁盘空间
-- **TLS版本**: 1GB+ 内存, 2GB+ 磁盘空间（安全增强需要更多资源）
+- **内存**: 1GB+ 内存（推荐2GB+以获得最佳性能）
+- **磁盘空间**: 2GB+ 磁盘空间（安全增强需要更多资源）
 
 ### 网络要求
 - 公网IP地址
-- TLS版本需要域名支持
+- 域名支持（必需）
 - 开放必要端口（80, 443, 自定义端口）
 ## 🔧 管理和维护
 
@@ -211,7 +203,7 @@ openssl x509 -in /opt/v2ray-tls/certs/live/domain.com/fullchain.pem -enddate -no
 
 ### 🆕 智能证书备份与恢复
 
-TLS版本现在支持智能证书备份机制，避免重复申请Let's Encrypt证书：
+V2Ray TLS部署脚本现在支持智能证书备份机制，避免重复申请Let's Encrypt证书：
 
 #### 🔄 自动备份流程
 1. **检测现有证书** - 部署前扫描已存在的有效证书
@@ -248,7 +240,7 @@ TLS版本现在支持智能证书备份机制，避免重复申请Let's Encrypt�
 5. **权限问题** - 自动修复文件和目录权限
 
 ### 性能优化建议
-- **内存使用** - TLS版本建议2GB+内存以获得最佳性能
+- **内存使用** - 建议2GB+内存以获得最佳性能
 - **网络优化** - 启用BBR拥塞控制算法
 - **磁盘空间** - 定期清理Docker镜像和日志文件
 

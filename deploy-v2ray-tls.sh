@@ -341,7 +341,6 @@ secure_config_files() {
     
     # 设置脚本文件权限
     local script_files=(
-        "deploy-v2ray-basic.sh"
         "deploy-v2ray-tls.sh"
         "scripts/renew-cert.sh"
     )
