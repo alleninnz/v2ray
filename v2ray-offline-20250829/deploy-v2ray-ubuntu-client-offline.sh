@@ -50,10 +50,6 @@ show_download_instructions() {
     echo "   - ARM64: v2ray-linux-arm64-v8a.zip"
     echo "   - ARM32: v2ray-linux-arm32-v7a.zip"
     echo
-    echo "2. 地理位置数据文件："
-    echo "   - geoip.dat: https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
-    echo "   - geosite.dat: https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
-    echo
     echo -e "${YELLOW}下载完成后，请将这些文件放在与此脚本相同的目录下。${NC}"
     echo
     read -p "文件已准备好？[y/N] " -n 1 -r
@@ -96,15 +92,6 @@ check_offline_files() {
         log_error "未找到V2Ray安装包: $SCRIPT_DIR/$PACKAGE_NAME"
         log_info "请下载对应架构的V2Ray安装包"
         exit 1
-    fi
-    
-    # 检查geo文件（可选）
-    if [[ ! -f "$SCRIPT_DIR/geoip.dat" ]]; then
-        log_warn "未找到geoip.dat文件，将使用内置规则"
-    fi
-    
-    if [[ ! -f "$SCRIPT_DIR/geosite.dat" && ! -f "$SCRIPT_DIR/dlc.dat" ]]; then
-        log_warn "未找到geosite.dat文件，将使用内置规则"
     fi
     
     log_info "离线文件检查完成"
@@ -153,20 +140,6 @@ install_v2ray_offline() {
     log_info "安装V2Ray二进制文件..."
     cp v2ray /usr/local/bin/
     chmod +x /usr/local/bin/v2ray
-    
-    # 复制geo文件
-    if [[ -f "$SCRIPT_DIR/geoip.dat" ]]; then
-        log_info "安装geoip.dat..."
-        cp "$SCRIPT_DIR/geoip.dat" /usr/local/share/v2ray/
-    fi
-    
-    if [[ -f "$SCRIPT_DIR/geosite.dat" ]]; then
-        log_info "安装geosite.dat..."
-        cp "$SCRIPT_DIR/geosite.dat" /usr/local/share/v2ray/
-    elif [[ -f "$SCRIPT_DIR/dlc.dat" ]]; then
-        log_info "安装dlc.dat为geosite.dat..."
-        cp "$SCRIPT_DIR/dlc.dat" /usr/local/share/v2ray/geosite.dat
-    fi
     
     # 创建systemd服务文件
     cat > /etc/systemd/system/v2ray.service << 'EOF'

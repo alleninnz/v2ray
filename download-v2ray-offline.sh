@@ -84,22 +84,19 @@ download_v2ray_files() {
     # 下载不同架构的V2Ray包
     log_step "下载V2Ray核心程序..."
     
-    declare -A ARCH_MAP=(
-        ["v2ray-linux-64.zip"]="Linux x86_64"
-        ["v2ray-linux-arm64-v8a.zip"]="Linux ARM64"
-        ["v2ray-linux-arm32-v7a.zip"]="Linux ARM32"
+    # 定义要下载的包列表
+    PACKAGES=(
+        "v2ray-linux-64.zip:Linux x86_64"
+        "v2ray-linux-arm64-v8a.zip:Linux ARM64"
+        "v2ray-linux-arm32-v7a.zip:Linux ARM32"
     )
     
-    for package in "${!ARCH_MAP[@]}"; do
+    for package_info in "${PACKAGES[@]}"; do
+        package=$(echo "$package_info" | cut -d':' -f1)
+        desc=$(echo "$package_info" | cut -d':' -f2)
         url="https://github.com/v2fly/v2ray-core/releases/download/${LATEST_VERSION}/${package}"
-        download_file "$url" "$package" "${ARCH_MAP[$package]}"
+        download_file "$url" "$package" "$desc"
     done
-    
-    # 下载geo文件
-    log_step "下载地理位置数据文件..."
-    
-    download_file "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" "geoip.dat" "IP地理位置数据"
-    download_file "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" "geosite.dat" "域名地理位置数据"
     
     # 复制安装脚本
     if [[ -f "../deploy-v2ray-ubuntu-client-offline.sh" ]]; then
@@ -116,8 +113,6 @@ V2Ray 离线安装包使用说明
    - v2ray-linux-64.zip         # Linux x86_64 架构
    - v2ray-linux-arm64-v8a.zip  # Linux ARM64 架构
    - v2ray-linux-arm32-v7a.zip  # Linux ARM32 架构
-   - geoip.dat                  # IP地理位置数据
-   - geosite.dat                # 域名地理位置数据（dlc.dat重命名）
    - deploy-v2ray-ubuntu-client-offline.sh  # 离线安装脚本
 
 2. 使用方法：
