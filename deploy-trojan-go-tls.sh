@@ -16,14 +16,57 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 BOLD='\033[1m'
 
-# 配置变量
-TROJAN_DIR="/opt/trojan-go"
-TROJAN_PORT="443"
+# 默认配置变量
+DEFAULT_TROJAN_DIR="/opt/trojan-go"
+DEFAULT_TROJAN_PORT="443"
+DEFAULT_CERT_DAYS="365"
+DEFAULT_SERVICE_WAIT="10"
+DEFAULT_MAX_RETRIES="3"
+
+# 运行时配置 (可通过配置文件覆盖)
+TROJAN_DIR="${TROJAN_DIR:-$DEFAULT_TROJAN_DIR}"
+TROJAN_PORT="${TROJAN_PORT:-$DEFAULT_TROJAN_PORT}"
+CERT_VALIDITY_DAYS="${CERT_VALIDITY_DAYS:-$DEFAULT_CERT_DAYS}"
+SERVICE_WAIT_TIME="${SERVICE_WAIT_TIME:-$DEFAULT_SERVICE_WAIT}"
+MAX_RETRIES="${MAX_RETRIES:-$DEFAULT_MAX_RETRIES}"
 SERVER_IP=""
 DEBUG_MODE=false
+CONFIG_FILE=""
+
+# Docker脚本配置
+DOCKER_SCRIPT_URL="https://get.docker.com"
+DOCKER_SCRIPT_NAME="get-docker.sh"
 
 # 脚本目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 清理函数
+cleanup_on_error() {
+    log_error "部署失败，正在清理..."
+    
+    # 停止并删除Docker容器
+    if [ -d "$TROJAN_DIR" ]; then
+        cd "$TROJAN_DIR" 2>/dev/null || true
+        docker-compose down --remove-orphans 2>/dev/null || true
+        docker-compose rm -f 2>/dev/null || true
+    fi
+    
+    # 清理安装目录
+    if [ -d "$TROJAN_DIR" ] && [ "$TROJAN_DIR" != "/" ]; then
+        log_info "删除安装目录: $TROJAN_DIR"
+        rm -rf "$TROJAN_DIR" 2>/dev/null || true
+    fi
+    
+    # 清理临时文件
+    rm -f "$DOCKER_SCRIPT_NAME" 2>/dev/null || true
+    rm -f connection-info.txt 2>/dev/null || true
+    
+    log_info "清理完成"
+    exit 1
+}
+
+# 设置错误处理
+trap cleanup_on_error ERR
 
 # 日志函数
 log_info() {
@@ -69,7 +112,7 @@ detect_server_ip() {
     
     if [ -z "$SERVER_IP" ]; then
         log_error "无法自动检测服务器IP地址"
-        read -p "请手动输入服务器IP地址: " SERVER_IP
+        read -r -p "请手动输入服务器IP地址: " SERVER_IP
     fi
     
     # 验证IP格式
@@ -79,6 +122,15 @@ detect_server_ip() {
     fi
     
     log_success "服务器IP: $SERVER_IP"
+}
+
+# 输入验证函数
+validate_port() {
+    local port=$1
+    if [[ ! $port =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        log_error "端口无效: $port (必须是1-65535范围内的数字)"
+        exit 1
+    fi
 }
 
 # 检查系统要求
@@ -91,6 +143,9 @@ check_system_requirements() {
         exit 1
     fi
     
+    # 验证端口
+    validate_port "$TROJAN_PORT"
+    
     log_success "系统要求检查通过"
 }
 
@@ -98,40 +153,99 @@ check_system_requirements() {
 generate_password() {
     local length=${1:-32}
     if command -v openssl &> /dev/null; then
-        openssl rand -base64 $length | tr -d "=+/" | cut -c1-$length
+        openssl rand -base64 "$length" | tr -d "=+/" | cut -c1-"$length"
     elif [ -f /dev/urandom ]; then
-        tr -dc 'A-Za-z0-9' < /dev/urandom | head -c $length
+        tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length"
     else
-        date +%s | sha256sum | base64 | head -c $length
+        date +%s | sha256sum | base64 | head -c "$length"
     fi
+}
+
+# 检测包管理器
+detect_package_manager() {
+    if command -v apt-get &> /dev/null; then
+        echo "apt"
+    elif command -v yum &> /dev/null; then
+        echo "yum"
+    elif command -v dnf &> /dev/null; then
+        echo "dnf"
+    else
+        echo "unknown"
+    fi
+}
+
+# 安装系统依赖包
+install_packages() {
+    local pkg_manager="$1"
+    local packages=("curl" "wget" "openssl")
+    
+    case $pkg_manager in
+        "apt")
+            apt-get update -qq
+            apt-get install -y "${packages[@]}"
+            ;;
+        "yum")
+            yum update -y -q
+            yum install -y "${packages[@]}"
+            ;;
+        "dnf")
+            dnf update -y -q
+            dnf install -y "${packages[@]}"
+            ;;
+        *)
+            log_error "不支持的包管理器: $pkg_manager"
+            exit 1
+            ;;
+    esac
 }
 
 # 安装系统依赖
 install_system_dependencies() {
     log_step "安装系统依赖..."
     
-    # 更新包列表
-    if command -v apt-get &> /dev/null; then
-        apt-get update
-        apt-get install -y curl wget openssl
-    elif command -v yum &> /dev/null; then
-        yum update -y
-        yum install -y curl wget openssl
-    elif command -v dnf &> /dev/null; then
-        dnf update -y
-        dnf install -y curl wget openssl
-    else
-        log_error "不支持的包管理器"
+    local pkg_manager
+    pkg_manager=$(detect_package_manager)
+    
+    if [ "$pkg_manager" = "unknown" ]; then
+        log_error "未检测到支持的包管理器 (apt/yum/dnf)"
         exit 1
     fi
+    
+    log_info "检测到包管理器: $pkg_manager"
+    install_packages "$pkg_manager"
     
     # 安装Docker
     if ! command -v docker &> /dev/null; then
         log_info "安装Docker..."
-        curl -fsSL https://get.docker.com -o get-docker.sh
-        sh get-docker.sh
+        
+        # 下载Docker安装脚本
+        if ! curl -fsSL "$DOCKER_SCRIPT_URL" -o "$DOCKER_SCRIPT_NAME"; then
+            log_error "下载Docker安装脚本失败"
+            exit 1
+        fi
+        
+        # 验证脚本内容（基本检查）
+        if ! grep -q "docker" "$DOCKER_SCRIPT_NAME" || [ ! -s "$DOCKER_SCRIPT_NAME" ]; then
+            log_error "Docker安装脚本验证失败"
+            rm -f "$DOCKER_SCRIPT_NAME"
+            exit 1
+        fi
+        
+        # 执行安装脚本
+        log_info "执行Docker安装脚本..."
+        if ! sh "$DOCKER_SCRIPT_NAME"; then
+            log_error "Docker安装失败"
+            rm -f "$DOCKER_SCRIPT_NAME"
+            exit 1
+        fi
+        
+        # 清理安装脚本
+        rm -f "$DOCKER_SCRIPT_NAME"
+        
         systemctl enable docker
         systemctl start docker
+        
+        log_success "Docker安装完成"
     fi
     
     # 安装Docker Compose
@@ -165,7 +279,7 @@ generate_self_signed_cert() {
     
     # 生成证书（使用IP地址）
     openssl req -new -x509 -key "certs/live/$SERVER_IP/privkey.pem" \
-        -out "certs/live/$SERVER_IP/fullchain.pem" -days 365 \
+        -out "certs/live/$SERVER_IP/fullchain.pem" -days "$CERT_VALIDITY_DAYS" \
         -subj "/C=US/ST=State/L=City/O=Organization/CN=$SERVER_IP" \
         -extensions SAN \
         -config <(echo '[req]'; echo 'distinguished_name=req'; echo '[SAN]'; echo "subjectAltName=IP:$SERVER_IP")
@@ -304,14 +418,29 @@ deploy_trojan_service() {
     docker-compose up -d
     
     # 等待服务启动
-    sleep 10
+    log_info "等待服务启动... (${SERVICE_WAIT_TIME}秒)"
+    sleep "$SERVICE_WAIT_TIME"
     
-    # 检查服务状态
-    if ! docker-compose ps | grep -q "Up"; then
-        log_error "服务启动失败"
-        docker-compose logs
-        exit 1
-    fi
+    # 检查服务状态 (增加重试机制)
+    local retry_count=0
+    local max_retries="$MAX_RETRIES"
+    
+    while [ $retry_count -lt "$max_retries" ]; do
+        if docker-compose ps | grep -q "Up"; then
+            log_success "服务状态检查通过"
+            break
+        fi
+        
+        retry_count=$((retry_count + 1))
+        if [ $retry_count -lt "$max_retries" ]; then
+            log_warning "服务尚未启动，等待重试... ($retry_count/$max_retries)"
+            sleep 5
+        else
+            log_error "服务启动失败，已达到最大重试次数"
+            docker-compose logs --tail=50
+            exit 1
+        fi
+    done
     
     log_success "Trojan服务部署完成"
 }
@@ -431,19 +560,45 @@ show_deployment_result() {
     echo
 }
 
+# 加载配置文件
+load_config_file() {
+    local config_file="$1"
+    
+    if [ -f "$config_file" ]; then
+        log_info "加载配置文件: $config_file"
+        # shellcheck source=/dev/null
+        source "$config_file"
+    else
+        log_error "配置文件不存在: $config_file"
+        exit 1
+    fi
+}
+
 # 显示帮助信息
 show_help() {
     echo "用法: $0 [选项]"
     echo
     echo "选项:"
-    echo "  -p PORT     指定Trojan端口 (默认: 443)"
-    echo "  -h          显示此帮助信息"
-    echo "  --debug     启用调试模式"
+    echo "  -p PORT          指定Trojan端口 (默认: $DEFAULT_TROJAN_PORT)"
+    echo "  -d DIRECTORY     指定安装目录 (默认: $DEFAULT_TROJAN_DIR)"
+    echo "  -c CONFIG        指定配置文件路径"
+    echo "  --cert-days N    证书有效期 (默认: $DEFAULT_CERT_DAYS 天)"
+    echo "  --debug          启用调试模式"
+    echo "  -h, --help       显示此帮助信息"
+    echo
+    echo "环境变量:"
+    echo "  TROJAN_DIR       安装目录"
+    echo "  TROJAN_PORT      服务端口"
+    echo "  CERT_VALIDITY_DAYS  证书有效期"
+    echo "  SERVICE_WAIT_TIME   服务等待时间"
+    echo "  MAX_RETRIES      最大重试次数"
     echo
     echo "示例:"
-    echo "  $0                    # 使用默认配置部署"
-    echo "  $0 -p 8443           # 使用端口8443部署"
-    echo "  $0 --debug           # 启用调试模式部署"
+    echo "  $0                         # 使用默认配置部署"
+    echo "  $0 -p 8443                # 使用端口8443部署"
+    echo "  $0 -c /path/to/config.env # 使用配置文件"
+    echo "  $0 --debug                # 启用调试模式部署"
+    echo "  TROJAN_PORT=9443 $0       # 使用环境变量"
 }
 
 # 解析命令行参数
@@ -451,7 +606,40 @@ parse_arguments() {
     while [[ $# -gt 0 ]]; do
         case $1 in
             -p|--port)
+                if [ -z "${2:-}" ]; then
+                    log_error "--port 选项需要一个参数"
+                    show_help
+                    exit 1
+                fi
                 TROJAN_PORT="$2"
+                validate_port "$TROJAN_PORT"
+                shift 2
+                ;;
+            -d|--dir)
+                if [ -z "${2:-}" ]; then
+                    log_error "--dir 选项需要一个参数"
+                    show_help
+                    exit 1
+                fi
+                TROJAN_DIR="$2"
+                shift 2
+                ;;
+            -c|--config)
+                if [ -z "${2:-}" ]; then
+                    log_error "--config 选项需要一个参数"
+                    show_help
+                    exit 1
+                fi
+                CONFIG_FILE="$2"
+                shift 2
+                ;;
+            --cert-days)
+                if [ -z "${2:-}" ]; then
+                    log_error "--cert-days 选项需要一个参数"
+                    show_help
+                    exit 1
+                fi
+                CERT_VALIDITY_DAYS="$2"
                 shift 2
                 ;;
             -h|--help)
@@ -481,6 +669,11 @@ main() {
     
     # 解析参数
     parse_arguments "$@"
+    
+    # 加载配置文件（如果指定）
+    if [ -n "$CONFIG_FILE" ]; then
+        load_config_file "$CONFIG_FILE"
+    fi
     
     # 系统检查
     check_root
