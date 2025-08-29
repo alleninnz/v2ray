@@ -6,11 +6,10 @@
 [![Shell](https://img.shields.io/badge/Shell-Bash-green.svg)](https://www.gnu.org/software/bash/)
 [![Docker](https://img.shields.io/badge/Containerization-Docker-blue.svg)](https://www.docker.com/)
 [![V2Ray](https://img.shields.io/badge/Core-V2Ray-orange.svg)](https://www.v2fly.org/)
-[![Trojan-Go](https://img.shields.io/badge/Core-Trojan--Go-red.svg)](https://p4gefau1t.github.io/trojan-go/)
 
 ## 📖 项目简介
 
-本项目提供多种协议的高质量一键部署脚本，包括 V2Ray 和 Trojan-Go，专为生产环境和高安全需求场景设计。脚本经过精心优化，具备完善的错误处理、系统检查、证书管理和企业级安全配置。
+本项目提供高质量的V2Ray一键部署脚本，专为生产环境和高安全需求场景设计。脚本经过精心优化，具备完善的错误处理、系统检查、证书管理和企业级安全配置。
 
 ## 🎯 支持的协议
 
@@ -21,19 +20,6 @@
 - 🔒 **企业级安全** - TLS 1.2/1.3 + 22项安全增强
 - 🌐 **域名支持** - 使用真实域名增加可信度
 
-### 🔴 Trojan-Go - 新增！🆕
-**适用场景**: 多协议需求、高性能、简单配置
-**专为服务器 95.169.25.130 优化**
-
-- 🚀 **多协议支持** - Trojan + Shadowsocks + WebSocket
-- ⚡ **高性能** - 基于 teddysun/trojan-go 官方镜像
-- 🔧 **简单配置** - 一键部署，自动优化
-- 📜 **智能证书管理** - Let's Encrypt 自动申请、续期和备份恢复
-- 🎨 **三套网站模板** - 技术博客、企业网站、个人作品集
-- �️ **证书备份机制** - 智能备份与恢复，避免重复申请
-- � **进度指示器** - 可视化部署进度
-- 📊 **详细文档** - [查看 TLS 版本文档](README-TLS.md)
-
 ```bash
 # 使用 Let's Encrypt 证书部署
 sudo bash deploy-v2ray-tls.sh -d your-domain.com -e your-email@example.com
@@ -42,21 +28,8 @@ sudo bash deploy-v2ray-tls.sh -d your-domain.com -e your-email@example.com
 sudo bash deploy-v2ray-tls.sh -d your-domain.com -c self-signed
 ```
 
-**Trojan-Go 快速部署**：
-```bash
-# 一行命令安装（推荐）
-curl -fsSL https://raw.githubusercontent.com/alleninnz/v2ray/main/install-trojan-server.sh | sudo bash
-
-# 然后运行交互式部署
-sudo bash quick-deploy-trojan.sh
-
-# 或者直接命令行部署
-sudo bash deploy-trojan-go-tls.sh -d your-domain.com -e your-email@example.com
-```
-
 📚 **详细文档**：
 - V2Ray TLS 版本：[README-TLS.md](README-TLS.md)
-- Trojan-Go 版本：[README-TROJAN.md](README-TROJAN.md)
 
 ## 🌟 核心特性
 
