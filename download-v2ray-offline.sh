@@ -87,8 +87,6 @@ download_v2ray_files() {
     # 定义要下载的包列表
     PACKAGES=(
         "v2ray-linux-64.zip:Linux x86_64"
-        "v2ray-linux-arm64-v8a.zip:Linux ARM64"
-        "v2ray-linux-arm32-v7a.zip:Linux ARM32"
     )
     
     for package_info in "${PACKAGES[@]}"; do
@@ -111,8 +109,6 @@ V2Ray 离线安装包使用说明
 
 1. 文件说明：
    - v2ray-linux-64.zip         # Linux x86_64 架构
-   - v2ray-linux-arm64-v8a.zip  # Linux ARM64 架构
-   - v2ray-linux-arm32-v7a.zip  # Linux ARM32 架构
    - deploy-v2ray-ubuntu-client-offline.sh  # 离线安装脚本
 
 2. 使用方法：
