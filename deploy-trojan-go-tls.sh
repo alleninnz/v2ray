@@ -26,6 +26,7 @@ DEFAULT_MAX_RETRIES="3"
 # 运行时配置 (可通过配置文件覆盖)
 TROJAN_DIR="${TROJAN_DIR:-$DEFAULT_TROJAN_DIR}"
 TROJAN_PORT="${TROJAN_PORT:-$DEFAULT_TROJAN_PORT}"
+FALLBACK_PORT="${FALLBACK_PORT:-8081}"  # 默认使用8081端口避免冲突
 CERT_VALIDITY_DAYS="${CERT_VALIDITY_DAYS:-$DEFAULT_CERT_DAYS}"
 SERVICE_WAIT_TIME="${SERVICE_WAIT_TIME:-$DEFAULT_SERVICE_WAIT}"
 MAX_RETRIES="${MAX_RETRIES:-$DEFAULT_MAX_RETRIES}"
@@ -308,14 +309,14 @@ generate_trojan_config() {
     "local_addr": "0.0.0.0",
     "local_port": $TROJAN_PORT,
     "remote_addr": "127.0.0.1",
-    "remote_port": 80,
+    "remote_port": $FALLBACK_PORT,
     "password": ["$TROJAN_PASSWORD"],
     "ssl": {
         "cert": "/etc/trojan-go/certs/live/$SERVER_IP/fullchain.pem",
         "key": "/etc/trojan-go/certs/live/$SERVER_IP/privkey.pem",
         "sni": "$SERVER_IP",
         "fallback_addr": "127.0.0.1",
-        "fallback_port": 80
+        "fallback_port": $FALLBACK_PORT
     }
 }
 EOF
@@ -362,7 +363,7 @@ services:
     container_name: trojan-fallback
     restart: always
     ports:
-      - "80:80"
+      - "$FALLBACK_PORT:80"
     volumes:
       - ./web:/usr/share/nginx/html:ro
     cap_drop:
@@ -582,6 +583,7 @@ show_help() {
     echo "  -p PORT          指定Trojan端口 (默认: $DEFAULT_TROJAN_PORT)"
     echo "  -d DIRECTORY     指定安装目录 (默认: $DEFAULT_TROJAN_DIR)"
     echo "  -c CONFIG        指定配置文件路径"
+    echo "  -f PORT          指定fallback端口 (默认: 8081)"
     echo "  --cert-days N    证书有效期 (默认: $DEFAULT_CERT_DAYS 天)"
     echo "  --debug          启用调试模式"
     echo "  -h, --help       显示此帮助信息"
@@ -589,6 +591,7 @@ show_help() {
     echo "环境变量:"
     echo "  TROJAN_DIR       安装目录"
     echo "  TROJAN_PORT      服务端口"
+    echo "  FALLBACK_PORT    fallback网页端口"
     echo "  CERT_VALIDITY_DAYS  证书有效期"
     echo "  SERVICE_WAIT_TIME   服务等待时间"
     echo "  MAX_RETRIES      最大重试次数"
@@ -596,9 +599,10 @@ show_help() {
     echo "示例:"
     echo "  $0                         # 使用默认配置部署"
     echo "  $0 -p 8443                # 使用端口8443部署"
+    echo "  $0 -f 8082                # 使用fallback端口8082"
     echo "  $0 -c /path/to/config.env # 使用配置文件"
     echo "  $0 --debug                # 启用调试模式部署"
-    echo "  TROJAN_PORT=9443 $0       # 使用环境变量"
+    echo "  FALLBACK_PORT=8082 $0     # 使用环境变量设置fallback端口"
 }
 
 # 解析命令行参数
@@ -631,6 +635,16 @@ parse_arguments() {
                     exit 1
                 fi
                 CONFIG_FILE="$2"
+                shift 2
+                ;;
+            -f|--fallback-port)
+                if [ -z "${2:-}" ]; then
+                    log_error "--fallback-port 选项需要一个参数"
+                    show_help
+                    exit 1
+                fi
+                FALLBACK_PORT="$2"
+                validate_port "$FALLBACK_PORT"
                 shift 2
                 ;;
             --cert-days)
