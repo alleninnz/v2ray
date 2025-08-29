@@ -69,15 +69,182 @@ update_system() {
 install_v2ray() {
     log_step "安装V2Ray..."
     
-    # 使用官方安装脚本
-    bash <(curl -L https://raw.githubusercontent.com/v2fly/fhs-install-v2ray/master/install-release.sh)
+    # 创建临时目录
+    TEMP_DIR="/tmp/v2ray_install"
+    mkdir -p $TEMP_DIR
+    cd $TEMP_DIR
     
+    # 获取系统架构
+    ARCH=$(uname -m)
+    case $ARCH in
+        x86_64)
+            ARCH="64"
+            ;;
+        aarch64|arm64)
+            ARCH="arm64-v8a"
+            ;;
+        armv7l)
+            ARCH="arm32-v7a"
+            ;;
+        *)
+            log_error "不支持的系统架构: $ARCH"
+            exit 1
+            ;;
+    esac
+    
+    # V2Ray版本
+    V2RAY_VERSION="v5.16.1"
+    PACKAGE_NAME="v2ray-linux-${ARCH}.zip"
+    
+    log_info "检测到系统架构: $ARCH"
+    log_info "下载V2Ray版本: $V2RAY_VERSION"
+    
+    # 尝试多个下载源
+    DOWNLOAD_SUCCESS=false
+    
+    # 下载源列表（优先使用国内镜像）
+    DOWNLOAD_URLS=(
+        "https://ghproxy.com/https://github.com/v2fly/v2ray-core/releases/download/${V2RAY_VERSION}/${PACKAGE_NAME}"
+        "https://github.moeyy.xyz/https://github.com/v2fly/v2ray-core/releases/download/${V2RAY_VERSION}/${PACKAGE_NAME}"
+        "https://mirror.ghproxy.com/https://github.com/v2fly/v2ray-core/releases/download/${V2RAY_VERSION}/${PACKAGE_NAME}"
+        "https://hub.fastgit.xyz/v2fly/v2ray-core/releases/download/${V2RAY_VERSION}/${PACKAGE_NAME}"
+        "https://download.fastgit.org/v2fly/v2ray-core/releases/download/${V2RAY_VERSION}/${PACKAGE_NAME}"
+    )
+    
+    for url in "${DOWNLOAD_URLS[@]}"; do
+        log_info "尝试从以下地址下载: $url"
+        if wget --timeout=30 --tries=3 -O "$PACKAGE_NAME" "$url" 2>/dev/null; then
+            if [[ -f "$PACKAGE_NAME" && $(stat -c%s "$PACKAGE_NAME") -gt 1000000 ]]; then
+                log_info "下载成功: $url"
+                DOWNLOAD_SUCCESS=true
+                break
+            else
+                log_warn "下载的文件可能不完整，尝试下一个源..."
+                rm -f "$PACKAGE_NAME"
+            fi
+        else
+            log_warn "下载失败，尝试下一个源..."
+        fi
+    done
+    
+    if [[ "$DOWNLOAD_SUCCESS" != "true" ]]; then
+        log_error "所有下载源都失败了，尝试使用备用方法..."
+        
+        # 备用方法：使用curl
+        for url in "${DOWNLOAD_URLS[@]}"; do
+            log_info "使用curl尝试: $url"
+            if curl -L --connect-timeout 30 --max-time 300 -o "$PACKAGE_NAME" "$url" 2>/dev/null; then
+                if [[ -f "$PACKAGE_NAME" && $(stat -c%s "$PACKAGE_NAME") -gt 1000000 ]]; then
+                    log_info "curl下载成功: $url"
+                    DOWNLOAD_SUCCESS=true
+                    break
+                else
+                    rm -f "$PACKAGE_NAME"
+                fi
+            fi
+        done
+    fi
+    
+    if [[ "$DOWNLOAD_SUCCESS" != "true" ]]; then
+        log_error "无法下载V2Ray安装包"
+        log_error "请检查网络连接或手动下载安装包"
+        exit 1
+    fi
+    
+    # 解压安装包
+    log_info "解压V2Ray安装包..."
+    if ! unzip -q "$PACKAGE_NAME"; then
+        log_error "解压失败"
+        exit 1
+    fi
+    
+    # 创建必要的目录
+    mkdir -p /usr/local/bin
+    mkdir -p /usr/local/etc/v2ray
+    mkdir -p /var/log/v2ray
+    mkdir -p /usr/local/share/v2ray
+    
+    # 安装二进制文件
+    log_info "安装V2Ray二进制文件..."
+    cp v2ray /usr/local/bin/
+    chmod +x /usr/local/bin/v2ray
+    
+    # 复制资源文件
+    if [[ -f "geoip.dat" ]]; then
+        cp geoip.dat /usr/local/share/v2ray/
+    fi
+    if [[ -f "geosite.dat" ]]; then
+        cp geosite.dat /usr/local/share/v2ray/
+    fi
+    
+    # 如果压缩包中没有geo文件，尝试单独下载
+    if [[ ! -f "/usr/local/share/v2ray/geoip.dat" ]]; then
+        log_info "下载geoip.dat文件..."
+        GEO_URLS=(
+            "https://ghproxy.com/https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+            "https://github.moeyy.xyz/https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+            "https://mirror.ghproxy.com/https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+        )
+        
+        for geo_url in "${GEO_URLS[@]}"; do
+            if wget --timeout=30 -O /usr/local/share/v2ray/geoip.dat "$geo_url" 2>/dev/null; then
+                log_info "geoip.dat下载成功"
+                break
+            fi
+        done
+    fi
+    
+    if [[ ! -f "/usr/local/share/v2ray/geosite.dat" ]]; then
+        log_info "下载geosite.dat文件..."
+        GEOSITE_URLS=(
+            "https://ghproxy.com/https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+            "https://github.moeyy.xyz/https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+            "https://mirror.ghproxy.com/https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+        )
+        
+        for geosite_url in "${GEOSITE_URLS[@]}"; do
+            if wget --timeout=30 -O /usr/local/share/v2ray/geosite.dat "$geosite_url" 2>/dev/null; then
+                log_info "geosite.dat下载成功"
+                break
+            fi
+        done
+    fi
+    
+    # 创建systemd服务文件
+    cat > /etc/systemd/system/v2ray.service << 'EOF'
+[Unit]
+Description=V2Ray Service
+Documentation=https://www.v2fly.org/
+After=network.target nss-lookup.target
+
+[Service]
+User=nobody
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/usr/local/bin/v2ray run -config /usr/local/etc/v2ray/config.json
+Restart=on-failure
+RestartPreventExitStatus=23
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # 重新加载systemd
+    systemctl daemon-reload
+    
+    # 清理临时文件
+    cd /
+    rm -rf $TEMP_DIR
+    
+    # 验证安装
     if ! command -v v2ray &> /dev/null; then
         log_error "V2Ray安装失败"
         exit 1
     fi
     
     log_info "V2Ray安装成功"
+    log_info "版本信息: $(/usr/local/bin/v2ray version 2>/dev/null | head -n 1 || echo '版本获取失败')"
 }
 
 # 配置V2Ray客户端
