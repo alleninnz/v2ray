@@ -1,371 +1,38 @@
-# ========================================
-# V2Ray 项目 .gitignore 文件
-# ========================================
-
-# ========================================
-# Claude Code IDE 相关文件
-# ========================================
-
-# Claude Code 配置文件和缓存
-.claude/
-.claude/**
-*.claude
-
-# ========================================
-# 敏感信息和证书文件
-# ========================================
-
-# SSL/TLS 证书和密钥
+# Sensitive files
 *.pem
 *.key
 *.crt
 *.csr
 *.p12
 *.pfx
-certs/
-certificates/
-ssl/
-tls/
-
-# V2Ray 配置中的敏感信息
-config/config.json
-**/config/config.json
-*.uuid
+config.json
 connection-info.txt
-**/connection-info.txt
-
-# SSH 密钥
-id_rsa
-id_rsa.pub
-id_ed25519
-id_ed25519.pub
-*.ssh
-.ssh/
-
-# 环境变量文件
 .env
-.env.local
-.env.production
-.env.staging
-*.env
+.env.*
 
-# ========================================
-# 日志文件
-# ========================================
-
-# 所有日志文件
+# Logs
 *.log
-*.log.*
 logs/
-**/logs/
 log/
-**/log/
 
-# V2Ray 特定日志
-*access.log
-*error.log
-*v2ray*.log
-
-# Nginx 日志
-*nginx*.log
-*access*.log
-*error*.log
-
-# Docker 日志
-docker-compose.override.yml
-.docker/
-
-# 系统日志
-*.out
-*.err
-
-# ========================================
-# Docker 相关文件
-# ========================================
-
-# Docker 覆盖文件
-docker-compose.override.yml
-docker-compose.*.yml
-docker-compose.local.yml
-docker-compose.prod.yml
-
-# Docker 卷和数据
-data/
-volumes/
-**/data/
-**/volumes/
-
-# Docker 构建缓存
-.dockerignore.backup
-
-# ========================================
-# 临时文件和缓存
-# ========================================
-
-# 系统临时文件
-*.tmp
-*.temp
-*.swp
-*.swo
-*~
+# OS files
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# 备份文件
-*.bak
-*.backup
-*.orig
-*.old
-*.save
-
-# 压缩文件
-*.tar
-*.tar.gz
-*.tgz
-*.zip
-*.rar
-*.7z
-*.gz
-*.bz2
-*.xz
-
-# ========================================
-# 编辑器和IDE文件
-# ========================================
-
-# VS Code
+# IDE
 .vscode/
-*.code-workspace
-
-# Vim
+.idea/
 *.swp
 *.swo
 *~
-.viminfo
 
-# Emacs
-*~
-\#*\#
-/.emacs.desktop
-/.emacs.desktop.lock
-*.elc
-auto-save-list
-tramp
-.\#*
+# Temp files
+*.tmp
+*.bak
+*.backup
+*.old
 
-# Sublime Text
-*.sublime-project
-*.sublime-workspace
-
-# JetBrains IDEs
-.idea/
-*.iws
-*.iml
-*.ipr
-
-# Atom
-.atom/
-
-# ========================================
-# 运行时文件
-# ========================================
-
-# 进程ID文件
-*.pid
-*.pidfile
-
-# 套接字文件
-*.sock
-*.socket
-
-# 锁文件
-*.lock
-*.lockfile
-
-# 缓存目录
-cache/
-**/cache/
-.cache/
-tmp/
-**/tmp/
-
-# ========================================
-# 脚本生成的文件
-# ========================================
-
-# 自动生成的配置文件
-config-generated.json
-nginx-generated.conf
-docker-compose-generated.yml
-
-# 安装脚本生成的文件
-install.log
-deployment.log
-setup.log
-
-# 下载的文件
-get-docker.sh
-*.sh.backup
-
-# ========================================
-# 测试和调试文件
-# ========================================
-
-# 测试输出
-test-output/
-**/test-output/
-*.test
-*.spec
-
-# 调试文件
-debug.log
-debug-*.log
-*.debug
-
-# 性能测试文件
-benchmark.log
-performance.log
-*.perf
-
-# ========================================
-# 网络和安全相关
-# ========================================
-
-# 网络配置备份
-iptables.backup
-firewall.backup
-ufw.backup
-
-# 密码文件
-passwd
-password
-passwords.txt
-*.passwd
-
-# 用户数据
-users.db
-accounts.json
-
-# ========================================
-# 操作系统特定文件
-# ========================================
-
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-Icon
-._*
-.DocumentRevisions-V100
-.fseventsd
-.Spotlight-V100
-.TemporaryItems
-.Trashes
-.VolumeIcon.icns
-.com.apple.timemachine.donotpresent
-
-# Windows
-Thumbs.db
-Thumbs.db:encryptable
-ehthumbs.db
-ehthumbs_vista.db
-*.stackdump
-[Dd]esktop.ini
-$RECYCLE.BIN/
-*.cab
-*.msi
-*.msix
-*.msm
-*.msp
-*.lnk
-
-# Linux
-*~
-.fuse_hidden*
-.directory
-.Trash-*
-.nfs*
-
-# ========================================
-# 项目特定忽略
-# ========================================
-
-# V2Ray 运行时数据
-v2ray-data/
-**/v2ray-data/
-
-# 安装目录（如果在项目中）
-/opt/v2ray*/
-install/
-deployment/
-
-# 用户自定义配置
-local.conf
-local.json
-user-config.*
-custom-config.*
-
-# 监控和统计数据
-stats/
-monitoring/
-metrics/
-
-# ========================================
-# 网络工具和实用程序
-# ========================================
-
-# Curl 配置
-.curlrc
-
-# Wget 配置
-.wgetrc
-
-# 网络测试结果
-speedtest.log
-ping.log
-traceroute.log
-
-# ========================================
-# 部署相关
-# ========================================
-
-# Ansible
-*.retry
-.vault_pass
-
-# Terraform
-*.tfstate
-*.tfstate.*
-.terraform/
-
-# Kubernetes
-kubeconfig
-*.kubeconfig
-
-# 云提供商配置
-.aws/
-.gcp/
-.azure/
-
-# ========================================
-# 文档生成的临时文件
-# ========================================
-
-# Markdown 预览
-*.html.tmp
-
-# 文档构建
-docs/build/
-site/
-
-# ========================================
-# 最终说明
-# ========================================
-
-# 如果需要保留某些被忽略的文件，可以使用 !filename 来排除
-# 例如：
-# !important-config.json
-
-# 本地开发专用文件（建议不要提交）
-# 如果确实需要，请创建 .gitignore.local 并在本地使用
+# Project
+.serena/
+.claude/
