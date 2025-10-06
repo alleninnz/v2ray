@@ -31,23 +31,7 @@ CERT_METHOD=""
 DEBUG_MODE=false
 CERTS_BACKUP_DIR=""
 USE_EXISTING_CERTS=""
-RANDOM_PORTS=false
-
-# 生成随机端口
-generate_random_port() {
-    local min_port=10000
-    local max_port=65000
-    local random_port
-    
-    while true; do
-        random_port=$((RANDOM % (max_port - min_port + 1) + min_port))
-        # 检查端口是否被占用
-        if ! netstat -ln 2>/dev/null | grep -q ":${random_port} "; then
-            echo "$random_port"
-            return 0
-        fi
-    done
-}
+STATE_FILE=""
 
 # 脚本目录（在脚本开始时就计算，避免工作目录变化导致的问题）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -489,86 +473,350 @@ trap 'safe_exit 143' TERM # 终止信号
 show_help() {
     echo -e "${BOLD}V2Ray TLS 一键部署脚本${NC}"
     echo
-    echo "用法: $0 [选项]"
+    echo "用法: $0 {start|restart|stop|status|logs|info|renew-cert}"
     echo
-    echo "选项:"
-    echo "  -d, --domain DOMAIN     域名 (必需)"
-    echo "  -e, --email EMAIL       Let's Encrypt 邮箱地址"
-    echo "  -c, --cert METHOD       证书获取方法 (letsencrypt|self-signed) [默认: letsencrypt]"
-    echo "  -p, --port PORT         HTTPS端口 [默认: 10086]"
-    echo "  -r, --random-ports      使用随机端口提高安全性"
-    echo "      --debug             启用调试模式，显示详细输出"
-    echo "  -h, --help              显示此帮助信息"
+    echo "命令:"
+    echo "  ${GREEN}start${NC}       - 交互式部署V2Ray (需要root)"
+    echo "  ${YELLOW}restart${NC}     - 重启服务 (需要root)"
+    echo "  ${RED}stop${NC}        - 停止服务 (需要root)"
+    echo "  ${BLUE}status${NC}      - 查看服务状态"
+    echo "  ${CYAN}logs${NC}        - 查看服务日志"
+    echo "  ${PURPLE}info${NC}        - 显示连接信息"
+    echo "  ${BLUE}renew-cert${NC}  - 续期SSL证书 (需要root)"
     echo
     echo "示例:"
-    echo "  $0 -d example.com -e admin@example.com"
-    echo "  $0 --domain example.com --email admin@example.com --cert letsencrypt"
-    echo "  $0 -d example.com -c self-signed"
+    echo "  $0 start         # 开始部署，交互式输入配置"
+    echo "  $0 status        # 查看服务和证书状态"
+    echo "  $0 logs          # 实时查看服务日志"
+    echo "  $0 info          # 查看连接信息和VMess链接"
+    echo "  $0 renew-cert    # 手动续期Let's Encrypt证书"
     echo
 }
 
-# 解析命令行参数
-parse_arguments() {
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            -d|--domain)
-                DOMAIN="$2"
-                shift 2
-                ;;
-            -e|--email)
-                EMAIL="$2"
-                shift 2
-                ;;
-            -c|--cert)
-                CERT_METHOD="$2"
-                shift 2
-                ;;
-            -p|--port)
-                NGINX_PORT="$2"
-                shift 2
-                ;;
-            -r|--random-ports)
-                RANDOM_PORTS=true
-                shift
-                ;;
-            --debug)
-                DEBUG_MODE=true
-                shift
-                ;;
-            -h|--help)
-                show_help
-                exit 0
-                ;;
-            *)
-                log_error "未知参数: $1"
-                show_help
-                exit 1
-                ;;
-        esac
-    done
-    
-    # 设置默认值
-    if [ -z "$CERT_METHOD" ]; then
-        CERT_METHOD="letsencrypt"
-    fi
-    
-    # 处理随机端口选项
-    if [ "$RANDOM_PORTS" = true ]; then
-        log_info "生成随机端口以提高安全性..."
-        NGINX_PORT=$(generate_random_port)
-        log_info "使用随机HTTPS端口: $NGINX_PORT"
-    fi
-    
-    # 验证必需参数
-    if [ -z "$DOMAIN" ]; then
-        log_error "域名是必需的参数"
-        show_help
+# 保存部署状态
+save_deployment_state() {
+    STATE_FILE="${V2RAY_DIR}/.deployment-state"
+
+    cat > "$STATE_FILE" << EOF
+DOMAIN="$DOMAIN"
+EMAIL="$EMAIL"
+CERT_METHOD="$CERT_METHOD"
+NGINX_PORT="$NGINX_PORT"
+V2RAY_PORT="$V2RAY_PORT"
+WS_PATH="$WS_PATH"
+DEPLOY_DATE="$(date)"
+EOF
+
+    chmod 600 "$STATE_FILE"
+    log_success "部署状态已保存到: $STATE_FILE"
+}
+
+# 加载部署状态
+load_deployment_state() {
+    STATE_FILE="${V2RAY_DIR}/.deployment-state"
+
+    if [ ! -f "$STATE_FILE" ]; then
+        log_error "未找到部署状态文件: $STATE_FILE"
+        log_info "请先运行部署: $0 start"
         exit 1
     fi
-    
-    if [ "$CERT_METHOD" = "letsencrypt" ] && [ -z "$EMAIL" ]; then
-        log_error "使用 Let's Encrypt 时邮箱地址是必需的"
-        show_help
+
+    # shellcheck source=/dev/null
+    source "$STATE_FILE"
+    log_success "已加载部署配置: $DOMAIN (部署于 $DEPLOY_DATE)"
+}
+
+# 轻量级域名格式检查（用于交互式输入）
+check_domain_format() {
+    local domain="$1"
+
+    # 基本格式检查
+    if [[ -z "$domain" ]]; then
+        return 1
+    fi
+
+    # 长度检查
+    if [[ ${#domain} -gt 253 ]]; then
+        return 1
+    fi
+
+    # 格式验证
+    if [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+# 轻量级邮箱格式检查（用于交互式输入）
+check_email_format() {
+    local email="$1"
+
+    # 基本格式检查
+    if [[ -z "$email" ]]; then
+        return 1
+    fi
+
+    # 长度检查
+    if [[ ${#email} -gt 254 ]]; then
+        return 1
+    fi
+
+    # 格式验证
+    if [[ "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+# 交互式输入配置
+interactive_input() {
+    # 检查是否为交互式终端
+    if [ ! -t 0 ] || [ ! -t 1 ]; then
+        log_error "此命令需要在交互式终端中运行"
+        exit 1
+    fi
+
+    echo -e "${PURPLE}${BOLD}=========================================${NC}"
+    echo -e "${PURPLE}${BOLD}       V2Ray TLS 部署配置向导        ${NC}"
+    echo -e "${PURPLE}${BOLD}=========================================${NC}"
+    echo
+
+    # 域名输入
+    while true; do
+        echo -e "${BLUE}请输入域名 (例如: example.com):${NC}"
+        read -r -p "> " DOMAIN
+        DOMAIN=$(echo "$DOMAIN" | xargs)  # 去除首尾空格
+
+        if check_domain_format "$DOMAIN"; then
+            log_success "域名格式验证通过"
+            break
+        else
+            log_error "域名格式无效，请重新输入"
+            echo
+        fi
+    done
+
+    echo
+
+    # 邮箱输入
+    while true; do
+        echo -e "${BLUE}请输入邮箱地址 (用于Let's Encrypt证书通知):${NC}"
+        read -r -p "> " EMAIL
+        EMAIL=$(echo "$EMAIL" | xargs)  # 去除首尾空格
+
+        if check_email_format "$EMAIL"; then
+            log_success "邮箱格式验证通过"
+            break
+        else
+            log_error "邮箱格式无效，请重新输入"
+            echo
+        fi
+    done
+
+    echo
+
+    # 设置默认值
+    CERT_METHOD="letsencrypt"
+    NGINX_PORT=${NGINX_PORT:-10086}
+    V2RAY_PORT=${V2RAY_PORT:-8080}
+    WS_PATH=${WS_PATH:-/ray}
+
+    # 显示配置摘要
+    echo -e "${GREEN}${BOLD}配置摘要:${NC}"
+    echo -e "  域名: ${BOLD}$DOMAIN${NC}"
+    echo -e "  邮箱: ${BOLD}$EMAIL${NC}"
+    echo -e "  HTTPS端口: ${BOLD}$NGINX_PORT${NC}"
+    echo -e "  证书方式: ${BOLD}Let's Encrypt (自动申请)${NC}"
+    echo
+
+    # 进行完整的安全验证（使用原有的严格验证函数）
+    log_step "执行安全验证..."
+    validate_domain
+    validate_email
+}
+
+# 重启服务
+restart_services() {
+    log_step "重启V2Ray服务..."
+
+    if [ ! -d "$V2RAY_DIR" ]; then
+        log_error "部署目录不存在: $V2RAY_DIR"
+        exit 1
+    fi
+
+    cd "$V2RAY_DIR" || {
+        log_error "无法进入部署目录: $V2RAY_DIR"
+        exit 1
+    }
+
+    if [ ! -f "docker-compose.yml" ]; then
+        log_error "未找到docker-compose.yml文件"
+        exit 1
+    fi
+
+    docker-compose restart
+
+    # 等待服务启动
+    log_info "等待服务重启..."
+    sleep 5
+
+    # 检查服务状态
+    if docker-compose ps | grep -q "Up"; then
+        log_success "服务重启成功"
+        docker-compose ps
+    else
+        log_error "服务重启失败"
+        docker-compose logs --tail=50
+        exit 1
+    fi
+}
+
+# 停止服务
+stop_services() {
+    log_step "停止V2Ray服务..."
+
+    if [ ! -d "$V2RAY_DIR" ]; then
+        log_error "部署目录不存在: $V2RAY_DIR"
+        exit 1
+    fi
+
+    cd "$V2RAY_DIR" || {
+        log_error "无法进入部署目录: $V2RAY_DIR"
+        exit 1
+    }
+
+    if [ ! -f "docker-compose.yml" ]; then
+        log_error "未找到docker-compose.yml文件"
+        exit 1
+    fi
+
+    docker-compose down
+
+    log_success "服务已停止"
+    log_info "如需重新启动，请运行: $0 restart"
+}
+
+# 查看服务状态
+status_services() {
+    log_step "检查V2Ray服务状态..."
+
+    if [ ! -d "$V2RAY_DIR" ]; then
+        log_error "未找到部署目录: $V2RAY_DIR"
+        log_info "请先运行: $0 start"
+        exit 1
+    fi
+
+    cd "$V2RAY_DIR" || {
+        log_error "无法进入部署目录: $V2RAY_DIR"
+        exit 1
+    }
+
+    # 显示Docker容器状态
+    echo
+    echo -e "${BLUE}${BOLD}=== Docker容器状态 ===${NC}"
+    docker-compose ps
+    echo
+
+    # 显示证书状态（如果存在部署配置）
+    if [ -f ".deployment-state" ]; then
+        # shellcheck source=/dev/null
+        source ".deployment-state"
+
+        if [ -f "certs/live/$DOMAIN/fullchain.pem" ]; then
+            echo -e "${BLUE}${BOLD}=== SSL证书状态 ===${NC}"
+            local expiry
+            expiry=$(openssl x509 -in "certs/live/$DOMAIN/fullchain.pem" -enddate -noout 2>/dev/null | cut -d= -f2)
+
+            echo -e "域名: ${BOLD}$DOMAIN${NC}"
+            echo -e "到期时间: ${BOLD}$expiry${NC}"
+
+            # 计算剩余天数
+            if command -v date &> /dev/null; then
+                local expiry_timestamp
+                expiry_timestamp=$(date -d "$expiry" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$expiry" +%s 2>/dev/null)
+                if [ -n "$expiry_timestamp" ]; then
+                    local current_timestamp
+                    current_timestamp=$(date +%s)
+                    local days_left=$(( (expiry_timestamp - current_timestamp) / 86400 ))
+
+                    if [ "$days_left" -gt 30 ]; then
+                        echo -e "剩余天数: ${GREEN}${BOLD}$days_left 天${NC}"
+                    elif [ "$days_left" -gt 7 ]; then
+                        echo -e "剩余天数: ${YELLOW}${BOLD}$days_left 天${NC}"
+                    else
+                        echo -e "剩余天数: ${RED}${BOLD}$days_left 天 (需要续期)${NC}"
+                    fi
+                fi
+            fi
+            echo
+        fi
+    fi
+
+    log_success "状态检查完成"
+}
+
+# 查看服务日志
+view_logs() {
+    if [ ! -d "$V2RAY_DIR" ]; then
+        log_error "未找到部署目录: $V2RAY_DIR"
+        log_info "请先运行: $0 start"
+        exit 1
+    fi
+
+    cd "$V2RAY_DIR" || {
+        log_error "无法进入部署目录: $V2RAY_DIR"
+        exit 1
+    }
+
+    if [ ! -f "docker-compose.yml" ]; then
+        log_error "未找到docker-compose.yml文件"
+        exit 1
+    fi
+
+    log_info "查看服务日志 (按 Ctrl+C 退出)..."
+    echo
+    docker-compose logs -f --tail=100
+}
+
+# 显示连接信息
+show_info() {
+    load_deployment_state
+
+    if [ ! -f "$V2RAY_DIR/connection-info.txt" ]; then
+        log_error "未找到连接信息文件: $V2RAY_DIR/connection-info.txt"
+        log_info "连接信息文件可能在部署过程中未生成"
+        exit 1
+    fi
+
+    echo
+    cat "$V2RAY_DIR/connection-info.txt"
+    echo
+}
+
+# 续期SSL证书
+renew_certificate() {
+    load_deployment_state
+
+    if [ "$CERT_METHOD" != "letsencrypt" ]; then
+        log_error "当前使用的是自签名证书，无需续期"
+        log_info "自签名证书有效期为1年，到期后需重新部署"
+        exit 1
+    fi
+
+    if [ ! -f "$V2RAY_DIR/scripts/renew-cert.sh" ]; then
+        log_error "未找到证书续期脚本: $V2RAY_DIR/scripts/renew-cert.sh"
+        exit 1
+    fi
+
+    log_step "执行Let's Encrypt证书续期..."
+    bash "$V2RAY_DIR/scripts/renew-cert.sh"
+
+    if [ $? -eq 0 ]; then
+        log_success "证书续期成功"
+    else
+        log_error "证书续期失败，请查看日志"
         exit 1
     fi
 }
@@ -577,7 +825,7 @@ parse_arguments() {
 check_root() {
     if [ "$EUID" -ne 0 ]; then
         log_error "请使用root权限运行此脚本"
-        echo "使用命令: sudo bash $0 [选项]"
+        echo "使用命令: sudo $0 {start|restart|stop}"
         exit 1
     fi
 }
@@ -2006,60 +2254,86 @@ show_deployment_result() {
     echo
 }
 
-# 主函数
-main() {
-    # 设置信号处理器
-    setup_signal_handlers
-    
-    echo -e "${PURPLE}${BOLD}"
-    echo "========================================="
-    echo "         V2Ray TLS 一键部署脚本         "
-    echo "========================================="
-    echo -e "${NC}"
-    
-    if [ "$DEBUG_MODE" = true ]; then
-        log_debug "调试模式已启用"
-        log_debug "域名: $DOMAIN"
-        log_debug "邮箱: $EMAIL"
-        log_debug "证书方法: $CERT_METHOD"
-        log_debug "部署目录: $V2RAY_DIR"
-        log_debug "Nginx端口: $NGINX_PORT"
-        log_debug "V2Ray端口: $V2RAY_PORT"
-        log_debug "WebSocket路径: $WS_PATH"
-    fi
-    
-    parse_arguments "$@"
-    validate_script_files
-    check_root
-    validate_domain
-    validate_email
-    check_dns_resolution
-    check_system_requirements
-    check_ports
-    install_docker
-    install_docker_compose
-    setup_directories
-    setup_ssl_certificate
-    create_cert_renewal_script
-    create_v2ray_config
-    create_nginx_config
-    create_docker_compose
-    configure_firewall
-    
-    # 设置配置文件安全权限
-    secure_config_files
-    
-    start_services
-    test_services
-    
-    # 验证文件权限
-    verify_file_permissions
-    
-    save_config_info
-    show_deployment_result
-    
-    log_success "部署完成！"
-}
+# 命令路由
+case "${1:-}" in
+    start)
+        # 设置信号处理器
+        setup_signal_handlers
 
-# 执行主函数
-main "$@"
+        echo -e "${PURPLE}${BOLD}"
+        echo "========================================="
+        echo "         V2Ray TLS 一键部署脚本         "
+        echo "========================================="
+        echo -e "${NC}"
+
+        # 检查root权限
+        check_root
+
+        # 交互式输入配置
+        interactive_input
+
+        # 执行部署流程
+        validate_script_files
+        check_dns_resolution
+        check_system_requirements
+        check_ports
+        install_docker
+        install_docker_compose
+        setup_directories
+        setup_ssl_certificate
+        create_cert_renewal_script
+        create_v2ray_config
+        create_nginx_config
+        create_docker_compose
+        configure_firewall
+
+        # 设置配置文件安全权限
+        secure_config_files
+
+        start_services
+        test_services
+
+        # 验证文件权限
+        verify_file_permissions
+
+        save_config_info
+        save_deployment_state
+        show_deployment_result
+
+        log_success "部署完成！"
+        ;;
+
+    restart)
+        check_root
+        load_deployment_state
+        restart_services
+        ;;
+
+    stop)
+        check_root
+        load_deployment_state
+        stop_services
+        ;;
+
+    status)
+        status_services
+        ;;
+
+    logs)
+        view_logs
+        ;;
+
+    info)
+        show_info
+        ;;
+
+    renew-cert)
+        check_root
+        renew_certificate
+        ;;
+
+    *)
+        show_help
+        exit 1
+        ;;
+esac
