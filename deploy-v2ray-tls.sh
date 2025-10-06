@@ -695,7 +695,7 @@ stop_services() {
     docker-compose down
 
     log_success "服务已停止"
-    log_info "如需重新启动，请运行: $0 restart"
+    log_info "如需重新启动，请运行: $0 start"
 }
 
 # 查看服务状态
@@ -1924,55 +1924,88 @@ create_cert_renewal_script() {
     if [ "$CERT_METHOD" = "letsencrypt" ]; then
         log_step "创建证书自动续期脚本..."
         
-        cat > scripts/renew-cert.sh << EOF
+        cat > scripts/renew-cert.sh << 'EOF'
 #!/bin/bash
 
-# Let's Encrypt 证书续期脚本
+# Let's Encrypt 证书自动续期脚本（剩余<7天时续期）
 cd $V2RAY_DIR
 
-echo "\$(date): 开始证书续期检查..."
+echo "$(date): 开始证书续期检查..."
 
-# 创建临时Web服务器用于验证
-if ! docker ps | grep -q temp-nginx-renew; then
-    docker run --rm -d \\
-        --name temp-nginx-renew \\
-        -p 80:80 \\
-        -v "\$PWD/certs/www:/var/www/certbot:ro" \\
-        nginx:alpine \\
-        sh -c 'echo "server { listen 80; location /.well-known/acme-challenge/ { root /var/www/certbot; } }" > /etc/nginx/conf.d/default.conf && nginx -g "daemon off;"'
+# 检查证书到期时间
+CERT_FILE="certs/live/$DOMAIN/fullchain.pem"
+if [ ! -f "$CERT_FILE" ]; then
+    echo "$(date): 证书文件不存在: $CERT_FILE"
+    exit 1
 fi
 
-# 停止主Nginx服务
-docker-compose stop nginx
+# 获取证书到期时间戳
+EXPIRY=$(openssl x509 -in "$CERT_FILE" -enddate -noout 2>/dev/null | cut -d= -f2)
+if [ -z "$EXPIRY" ]; then
+    echo "$(date): 无法获取证书到期时间"
+    exit 1
+fi
 
-sleep 5
+# 计算剩余天数
+EXPIRY_TIMESTAMP=$(date -d "$EXPIRY" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$EXPIRY" +%s 2>/dev/null)
+CURRENT_TIMESTAMP=$(date +%s)
+DAYS_LEFT=$(( (EXPIRY_TIMESTAMP - CURRENT_TIMESTAMP) / 86400 ))
 
-# 续期证书
-if docker run --rm \\
-    -v "\$PWD/certs:/etc/letsencrypt" \\
-    -v "\$PWD/certs/www:/var/www/certbot" \\
-    certbot/certbot \\
-    renew --webroot --webroot-path=/var/www/certbot; then
-    echo "\$(date): 证书续期成功"
-    # 重启Nginx以加载新证书
-    docker-compose start nginx
+echo "$(date): 证书剩余天数: $DAYS_LEFT 天"
+
+# 剩余<7天时续期
+if [ "$DAYS_LEFT" -lt 7 ]; then
+    echo "$(date): 证书即将过期，开始续期..."
+
+    # 创建临时Web服务器用于验证
+    if ! docker ps | grep -q temp-nginx-renew; then
+        docker run --rm -d \
+            --name temp-nginx-renew \
+            -p 80:80 \
+            -v "$PWD/certs/www:/var/www/certbot:ro" \
+            nginx:alpine \
+            sh -c 'echo "server { listen 80; location /.well-known/acme-challenge/ { root /var/www/certbot; } }" > /etc/nginx/conf.d/default.conf && nginx -g "daemon off;"'
+    fi
+
+    # 停止主Nginx服务
+    docker-compose stop nginx
+
+    sleep 5
+
+    # 续期证书
+    if docker run --rm \
+        -v "$PWD/certs:/etc/letsencrypt" \
+        -v "$PWD/certs/www:/var/www/certbot" \
+        certbot/certbot \
+        renew --webroot --webroot-path=/var/www/certbot --force-renewal; then
+        echo "$(date): 证书续期成功"
+        # 重启Nginx以加载新证书
+        docker-compose start nginx
+    else
+        echo "$(date): 证书续期失败"
+        docker-compose start nginx
+    fi
+
+    # 清理临时服务器
+    docker stop temp-nginx-renew 2>/dev/null || true
 else
-    echo "\$(date): 证书续期失败"
-    docker-compose start nginx
+    echo "$(date): 证书仍然有效，剩余 $DAYS_LEFT 天，无需续期"
 fi
 
-# 清理临时服务器
-docker stop temp-nginx-renew 2>/dev/null || true
-
-echo "\$(date): 证书续期检查完成"
+echo "$(date): 证书续期检查完成"
 EOF
-        
+
+        # 替换脚本中的变量（因为使用了单引号heredoc）
+        sed -i.bak "s|\$V2RAY_DIR|$V2RAY_DIR|g" scripts/renew-cert.sh
+        sed -i.bak "s|\$DOMAIN|$DOMAIN|g" scripts/renew-cert.sh
+        rm -f scripts/renew-cert.sh.bak
+
         chmod +x scripts/renew-cert.sh
-        
-        # 添加到crontab（每月1号凌晨2点执行）
+
+        # 添加到crontab（每天凌晨2点执行）
         if ! crontab -l 2>/dev/null | grep -q "renew-cert.sh"; then
-            (crontab -l 2>/dev/null; echo "0 2 1 * * $V2RAY_DIR/scripts/renew-cert.sh >> $V2RAY_DIR/logs/cert-renewal.log 2>&1") | crontab -
-            log_success "证书自动续期任务已添加到crontab"
+            (crontab -l 2>/dev/null; echo "0 2 * * * $V2RAY_DIR/scripts/renew-cert.sh >> $V2RAY_DIR/logs/cert-renewal.log 2>&1") | crontab -
+            log_success "证书自动续期任务已添加到crontab（每天凌晨2点检查）"
         fi
     fi
 }
