@@ -2201,22 +2201,22 @@ $(echo '{
 ========================================
 
 查看服务状态:
-cd $V2RAY_DIR && docker-compose ps
+$0 status
 
-查看日志:
-cd $V2RAY_DIR && docker-compose logs -f
+查看服务日志:
+$0 logs
+
+查看连接信息:
+$0 info
 
 重启服务:
-cd $V2RAY_DIR && docker-compose restart
+sudo $0 restart
 
 停止服务:
-cd $V2RAY_DIR && docker-compose down
-
-更新服务:
-cd $V2RAY_DIR && docker-compose pull && docker-compose up -d
+sudo $0 stop
 
 续期证书（Let's Encrypt）:
-$V2RAY_DIR/scripts/renew-cert.sh
+sudo $0 renew-cert
 
 ========================================
 测试命令
@@ -2273,11 +2273,13 @@ show_deployment_result() {
     echo -e "   • 配置信息已保存到 ${BOLD}$PWD/connection-info.txt${NC}"
     echo
     echo -e "${PURPLE}🔧 管理命令:${NC}"
-    echo -e "   查看状态: ${BOLD}cd $V2RAY_DIR && docker-compose ps${NC}"
-    echo -e "   查看日志: ${BOLD}cd $V2RAY_DIR && docker-compose logs -f${NC}"
-    echo -e "   重启服务: ${BOLD}cd $V2RAY_DIR && docker-compose restart${NC}"
+    echo -e "   查看状态: ${BOLD}$0 status${NC}"
+    echo -e "   查看日志: ${BOLD}$0 logs${NC}"
+    echo -e "   查看连接信息: ${BOLD}$0 info${NC}"
+    echo -e "   重启服务: ${BOLD}sudo $0 restart${NC}"
+    echo -e "   停止服务: ${BOLD}sudo $0 stop${NC}"
     if [ "$CERT_METHOD" = "letsencrypt" ]; then
-        echo -e "   续期证书: ${BOLD}$V2RAY_DIR/scripts/renew-cert.sh${NC}"
+        echo -e "   续期证书: ${BOLD}sudo $0 renew-cert${NC}"
     fi
     echo
 }
