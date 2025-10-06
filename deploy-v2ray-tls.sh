@@ -2049,34 +2049,62 @@ configure_firewall() {
 # 启动服务
 start_services() {
     log_step "启动V2Ray TLS服务..."
-    
+
+    # 确保在正确的目录
+    cd "$V2RAY_DIR" || {
+        log_error "无法进入部署目录: $V2RAY_DIR"
+        exit 1
+    }
+
+    # 验证 docker-compose.yml 存在
+    if [ ! -f "docker-compose.yml" ]; then
+        log_error "未找到 docker-compose.yml 文件"
+        exit 1
+    fi
+
     # 拉取最新镜像
-    docker-compose pull
-    
+    log_info "拉取Docker镜像..."
+    if ! docker-compose pull; then
+        log_error "拉取镜像失败"
+        exit 1
+    fi
+
     # 启动服务
-    docker-compose up -d
-    
-    # 等待服务启动
-    log_info "等待服务启动..."
-    sleep 20
-    
-    # 检查服务状态
-    if ! docker-compose ps | grep -q "Up"; then
-        log_error "服务启动失败"
+    log_info "启动容器..."
+    if ! docker-compose up -d; then
+        log_error "启动容器失败"
         docker-compose logs
         exit 1
     fi
-    
+
+    # 等待服务启动
+    log_info "等待服务启动..."
+    sleep 20
+
+    # 检查服务状态
+    if ! docker-compose ps | grep -q "Up"; then
+        log_error "服务启动失败"
+        log_info "查看容器日志："
+        docker-compose logs
+        exit 1
+    fi
+
     log_success "服务启动成功"
 }
 
 # 测试服务
 test_services() {
     log_step "测试服务连接..."
-    
+
+    # 确保在正确的目录
+    cd "$V2RAY_DIR" || {
+        log_error "无法进入部署目录: $V2RAY_DIR"
+        exit 1
+    }
+
     local max_attempts=15
     local attempt=1
-    
+
     # 测试HTTPS连接
     while [ $attempt -le $max_attempts ]; do
         if curl -sk --connect-timeout 5 "https://localhost:${NGINX_PORT}/health" > /dev/null; then
